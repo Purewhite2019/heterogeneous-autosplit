@@ -108,7 +108,7 @@ if worker:
             transforms.Normalize((0.5,), (0.5,))])
 
     file_path = "./data/FashionMNIST/processed/fashion_mnist.pkl"
-    if os.path.isfile(file_path):
+    if os.path.exists(file_path):
         with open(file_path, 'rb') as f:
             train_set = pickle.load(f)
     else:
