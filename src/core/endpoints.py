@@ -28,7 +28,7 @@ class Connection():
             msg (Tuple, optional): Message to be sent in Tuple
             kwmsg (Dict, optional): Message to be sent in Dict
         """
-        MPI.COMM_WORLD.send([msg, kwmsg], self.dst_rank)
+        MPI.COMM_WORLD.send([(msg, kwmsg)], self.dst_rank)
     
     def recv(self) -> List[Tuple[Tuple, Dict]]:
         """Retrieve all messages in the message queue. If the message queue is empty,
