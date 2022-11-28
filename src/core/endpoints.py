@@ -18,30 +18,22 @@ LOG_LEVEL = logging.DEBUG
 class Connection():
     """Abstract class defining the connection between 2 endpoints.
     """
-    def __init__(self) -> None:
-        pass
-    
+    def __init__(self, dst_rank: int) -> None:
+        self.dst_rank = dst_rank
+
     def send(self, *msg, **kwmsg) -> None:
         """Send a group of message to message queue of the other endpoint.
         Args:
             msg (Tuple, optional): Message to be sent in Tuple
             kwmsg (Dict, optional): Message to be sent in Dict
-        Raises:
-            NotImplementedError: this is an abstract class that should`n be called.
         """
-        raise NotImplementedError()
+        MPI.COMM_WORLD.send([msg, kwmsg], self.dst_rank)
     
     def recv(self) -> List[Tuple, Dict]:
         """Retrieve all messages in the message queue. If the message queue is empty,
         this function keeps waiting until a message comes.
-
-        Raises:
-            NotImplementedError: this is an abstract class that should`n be called.
-
-        Returns:
-            List[Tuple, Dict]: List of messages in the message queue
         """
-        raise NotImplementedError()
+        return MPI.COMM_WORLD.recv(self.dst_rank)
 
 
 class Client(DynamicNetworkTrainer):
@@ -90,4 +82,5 @@ class Client(DynamicNetworkTrainer):
 class Server(DynamicNetworkTrainer):
     def __init__(self, model_layers: List[nn.Module], optim_alg: str, optim_kwargs: dict) -> None:
         super().__init__(model_layers, optim_alg, optim_kwargs)
+
 
