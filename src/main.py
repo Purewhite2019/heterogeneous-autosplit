@@ -1,3 +1,6 @@
+import os
+import sys
+
 from src.core import Client, Server, MPIConnection
 from src.models.cifar import mobilenet
 
@@ -10,6 +13,11 @@ import torchvision
 import torchvision.transforms as T
 from torch.utils.data import Dataset, DataLoader
 
+
+sys.path.append('./')
+
+from src.core import Client, Server, MPIConnection
+from src.models.cifar import mobilenet
 from mpi4py import MPI
 
 comm = MPI.COMM_WORLD
@@ -52,15 +60,16 @@ if __name__ == '__main__':
         runner = Client(rank, dump_path, feat_extractor, 'sgd', dict(lr=1e-2, momentum=0.99), dataloader_fn,
                server_connection=client_to_server_connection)
         runner.train(n_epoch=50)
-        test_dataset = torchvision.datasets.CIFAR10(root='data/cifar10/', train=False, download=True,
-                                                    transform=T.Compose([T.ToTensor(),
-                                                                         T.Normalize(mean=(0.4914, 0.4822, 0.4465),
-                                                                                     std=(0.247, 0.243, 0.261))]))
-        test_loader = DataLoader(test_dataset, batch_size=128, shuffle=False, pin_memory=True, drop_last=False)
-
-        device = 'cuda' if torch.cuda.is_available() else 'cpu'
-        model = torch.load(self.dump_path, 'model_finished.pth').to(device)
-
-        for X, y in test_loader:
-            pass
-            # TODO: test model accuracy here
+        runner.wait_for_sync()
+        # test_dataset = torchvision.datasets.CIFAR10(root='data/cifar10/', train=False, download=True,
+        #                                             transform=T.Compose([T.ToTensor(),
+        #                                                                  T.Normalize(mean=(0.4914, 0.4822, 0.4465),
+        #                                                                              std=(0.247, 0.243, 0.261))]))
+        # test_loader = DataLoader(test_dataset, batch_size=128, shuffle=False, pin_memory=True, drop_last=False)
+        #
+        # device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        # model = torch.load(dump_path, 'model_finished.pth').to(device)
+        #
+        # for X, y in test_loader:
+        #     pass
+        #     # TODO: test model accuracy here
