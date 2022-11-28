@@ -26,13 +26,8 @@ class DynamicNetwork(nn.Module):
         self.model_layers.insert(0, layer)
 
     #! Caution: the return values shouldn't be modified otherwise the running model parameters will be modified as well.
-    def dump_front_layer(self) -> nn.Module:
-        layer = self.model_layers[0]
-        return layer
-
-    #! Caution: the return values shouldn't be modified otherwise the running model parameters will be modified as well.
-    def dump_back_layer(self) -> nn.Module:
-        layer = self.model_layers[-1]
+    def dump_layer(self, idx: int) -> nn.Module:
+        layer = self.model_layers[idx]
         return layer
 
     def pop_front_layer(self) -> nn.Module:
@@ -142,24 +137,12 @@ class DynamicNetworkTrainer():
         self.optim.load_state_dict(optim_state)
 
     #! Caution: the returned layer parameters shouldn't be modified otherwise the running model parameters will be modified as well.
-    def dump_front_layer(self) -> Tuple[nn.Module, Any]:
-        layer = self.model.dump_front_layer()
+    def dump_layer(self, idx: int) -> Tuple[nn.Module, Any]:
+        layer = self.model.dump_layer(idx)
         optim_state = self.optim.state_dict()
         
         if isinstance(self.optim, optim.SGD):
-            optim_state_diff = optim_state['state'][0]
-        else:
-            raise NotImplementedError(f'Optimizer "{type(self.optim)}" is not supported.')
-        
-        return layer, optim_state_diff
-
-    #! Caution: the returned layer parameters shouldn't be modified otherwise the running model parameters will be modified as well.
-    def dump_back_layer(self) -> Tuple[nn.Module, Any]:
-        layer = self.model.dump_back_layer()
-        optim_state = self.optim.state_dict()
-        
-        if isinstance(self.optim, optim.SGD):
-            optim_state_diff = optim_state['state'][-1]
+            optim_state_diff = optim_state['state'][idx]
         else:
             raise NotImplementedError(f'Optimizer "{type(self.optim)}" is not supported.')
         
