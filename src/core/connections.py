@@ -7,7 +7,7 @@ class Connection():
     def __init__(self) -> None:
         pass
 
-    def send(self, non_blocking=False, *msg, **kwmsg) -> None:
+    def send(self, dest, non_blocking=False, *msg, **kwmsg) -> None:
         """Send a group of message to message queue of the other endpoint.
         Args:
             non_blocking (bool): if set to False, it blocks until a message comes.
@@ -38,11 +38,11 @@ class Connection():
 class MPIConnection(Connection):
     """Implementation of Connection using MPI
     """
-    def __init__(self, dst_rank) -> None:
+    def __init__(self, rank) -> None:
         super().__init__()
-        self.dst_rank = dst_rank
+        self.rank = rank
 
-    def send(self, non_blocking=False, *msg, **kwmsg) -> None:
+    def send(self, dest, non_blocking=False, *msg, **kwmsg) -> None:
         """Send a group of message to message queue of the other endpoint.
         Args:
             non_blocking (bool): if set to False, it blocks until a message comes.
@@ -50,9 +50,9 @@ class MPIConnection(Connection):
             kwmsg (Dict, optional): Message to be sent in Dict
         """
         if non_blocking:
-            MPI.COMM_WORLD.isend([(msg, kwmsg)], self.dst_rank)
+            MPI.COMM_WORLD.isend([(msg, kwmsg)], dest)
         else:
-            MPI.COMM_WORLD.send([(msg, kwmsg)], self.dst_rank)
+            MPI.COMM_WORLD.send([(msg, kwmsg)], dest)
     
     def recv(self, non_blocking=False) -> List[Tuple[Tuple, Dict]]:
         """Retrieve all messages in the message queue. If the message queue is empty,
@@ -65,6 +65,6 @@ class MPIConnection(Connection):
             List[Tuple, Dict]: List of messages in the message queue
         """
         if non_blocking:
-            return MPI.COMM_WORLD.irecv(self.dst_rank)
+            return MPI.COMM_WORLD.recv()
         else:
-            return MPI.COMM_WORLD.recv(self.dst_rank)
+            return MPI.COMM_WORLD.recv()

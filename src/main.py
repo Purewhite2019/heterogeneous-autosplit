@@ -30,8 +30,7 @@ def is_server(rankp: int):
     return rankp == 0
 
 
-def dataloader_fn(idx: int) -> DataLoader:
-    return DataLoader(client_datasets[idx], batch_size=32, shuffle=True, pin_memory=True)
+
 
 if __name__ == '__main__':
     feat_extractor, classifier = mobilenet(class_num=10).dump_layers()
@@ -44,22 +43,27 @@ if __name__ == '__main__':
     client_datasets = random_split(whole_train_dataset, [len(whole_train_dataset) // 2,
                                                          len(whole_train_dataset) - len(whole_train_dataset) // 2])
 
+    def dataloader_fn(idx: int) -> DataLoader:
+        return DataLoader(client_datasets[idx - 1], batch_size=32, shuffle=True, pin_memory=True)
+
     dump_path = f'experiment/example/{time.strftime("%Y%m%d-%H%M%S", time.localtime())}'
 
     if is_server(rank):
-        server_to_client_connections = []
-        for i in range(1, MAX_RANK):
-            server_to_client_connections.append(MPIConnection(i))
-            runner = Server(dump_path, feat_extractor + classifier, 'sgd', dict(lr=1e-3, momentum=0.99),
-                   server_to_client_connections)
-            runner.listen()
-            runner.save_model('model_finished.pth')
-
+        server_to_client_connection = MPIConnection(0)
+        print('Server2Clients\' connections are all established')
+        runner = Server(dump_path, feat_extractor + classifier, 'sgd', dict(lr=1e-3, momentum=0.99),
+               server_to_client_connection, MAX_RANK - 1)
+        print('Server begins listening')
+        runner.listen()
+        print('Server terminate listening')
+        runner.save_model('model_finished.pth')
     else:
-        client_to_server_connection = MPIConnection(SERVER_RANK)
+        client_to_server_connection = MPIConnection(rank)
         runner = Client(rank, dump_path, feat_extractor, 'sgd', dict(lr=1e-2, momentum=0.99), dataloader_fn,
                server_connection=client_to_server_connection)
+        print(f'Client {rank} begins training')
         runner.train(n_epoch=50)
+        print(f'Client {rank} terminate training')
         runner.wait_for_sync()
         # test_dataset = torchvision.datasets.CIFAR10(root='data/cifar10/', train=False, download=True,
         #                                             transform=T.Compose([T.ToTensor(),

@@ -50,7 +50,7 @@ class Client(DynamicNetworkTrainer):
     def right_shift_split_point(self):
         logging.info('Right-shifting split point...')
         
-        self.server_connection.send(f'Client{self.number}RequestParameters', len(self.model.model_layers))
+        self.server_connection.send(0, f'Client{self.number}RequestParameters', len(self.model.model_layers))
         msgs = self.server_connection.recv()
         assert len(msgs) == 1 and len(msgs[0][1]) == None
         msg_type, layer, optim_state_diff = msgs[0][0]
@@ -67,7 +67,7 @@ class Client(DynamicNetworkTrainer):
                 feat_client = self.forward(X)
                 
                 logging.debug(f'Sending forward information to server: {len(self.model.model_layers)}, {feat_client.shape}, {y.shape}')
-                self.server_connection.send(f'Client{self.number}Forward', len(self.model.model_layers), feat_client, y)
+                self.server_connection.send(0, False, f'Client{self.number}Forward', len(self.model.model_layers), feat_client, y)
 
                 msgs = self.server_connection.recv()
                 assert len(msgs) == 1 and len(msgs[0][1]) == None
@@ -83,7 +83,7 @@ class Client(DynamicNetworkTrainer):
     def wait_for_sync(self) -> None:
         logging.info('Synchronizing with the server...')
 
-        self.server_connection.send(f'Client{self.number}Sync', self.model.state_dict(), self.optim.state_dict())
+        self.server_connection.send(0, False, f'Client{self.number}Sync', self.model.state_dict(), self.optim.state_dict())
         msgs = self.server_connection.recv()
         assert len(msgs) == 1 and len(msgs[0][1]) == None
         msg_type, model_synced, optim_synced = msgs[0][0]
@@ -107,14 +107,14 @@ class Client(DynamicNetworkTrainer):
 class Server(DynamicNetworkTrainer):
     def __init__(self, dump_path: str,
                  whole_model_layers: List[nn.Module], optim_alg: str, optim_kwargs: dict,
-                 client_connections: List[Connection]) -> None:
+                 client_connection: Connection, client_num: int) -> None:
         super().__init__(whole_model_layers, optim_alg, optim_kwargs)
 
 
         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
         self.dump_path = dump_path
-        self.client_connections = client_connections
-        self.wait_for_sync = [None] * len(client_connections)
+        self.client_connection = client_connection
+        self.wait_for_sync = [None] * client_num
         
         os.makedirs(self.dump_path, exist_ok=True)
         logging.basicConfig(format=f'%(asctime)s - %(filename)s[line:%(lineno)d] - [Server] %(levelname)s: %(message)s',
@@ -126,47 +126,45 @@ class Server(DynamicNetworkTrainer):
         
     def listen(self):
         while (True):
-            for i, cc in enumerate(self.client_connections):
-                msgs = cc.recv()
-                for (msg, kwmsg) in msgs:
-                    assert kwmsg == None    # We don`t use kwmsg currently.
-                    if re.match(r'Client\d+Forward', msg[0]):
-                        layer_idx, feat_client, y = msg[1:]
-                        client_idx = re.sub('Forward', "", re.sub('Client', "", msg[0]))
-                        
-                        logging.debug(f'Received forward information from client {client_idx}: {layer_idx}, {feat_client.shape}, {y.shape}')
-                        
-                        feat_client, y = feat_client.to(self.device), y.to(self.device)
-                        feat_client.requires_grad_(True)
-                        
-                        logits = self.forward(feat_client, layer_idx)
-                        loss = F.cross_entropy(logits, y)
-                        
-                        self.zero_grad()
-                        loss.backward()
-                        self.step()
-                        
-                        logging.debug(f'Sending backward information to client {client_idx}: {feat_client.shape}')
-                        cc.send(f'ServerBackwardToClient{client_idx}', feat_client.grad.detach(), non_blocking=True)
-                    
-                    elif re.match(r'Client\d+RequestParameters', msg[0]):
-                        layer_idx = msg[1]
-                        client_idx = re.sub('RequestParameters', "", re.sub('Client', "", msg[0]))
-                        
-                        layer, optim_state_diff = self.dump_layer(layer_idx)
-                        logging.debug(f'Sending layer to client {client_idx}: {type(layer)}, {type(optim_state_diff)}')
-                        cc.send(f'ServerReplyParametersToClient{client_idx}', layer, optim_state_diff, non_blocking=True)
-                        
-                    elif re.match(r'Client\d+Sync', msg[0]):
-                        model_state, optim_state = msg[1:]
-                        client_idx = re.sub('Sync', "", re.sub('Client', "", msg[0]))
-                        
-                        if self.wait_for_sync[i] is not None:
-                            raise RuntimeError(f'Client {client_idx} is already waiting for sync but sync signal was received again.')
-                        self.wait_for_sync[i] = client_idx, model_state, optim_state
-                    
-                    else:
-                        raise ValueError(f'Unknown message type "{msg[0]}".')
+            msgs = self.client_connection.recv()
+            for (msg, kwmsg) in msgs:
+                assert kwmsg == {}    # We don`t use kwmsg currently.
+                if re.match(r'Client\d+Forward', msg[0]):
+                    layer_idx, feat_client, y = msg[1:]
+                    client_idx = int(re.sub('Forward', "", re.sub('Client', "", msg[0])))
+
+                    logging.debug(f'Received forward information from client {client_idx}: {layer_idx}, {feat_client.shape}, {y.shape}')
+
+                    feat_client, y = feat_client.to(self.device), y.to(self.device)
+                    feat_client.requires_grad_(True)
+                    logits = self.forward(feat_client, layer_idx)
+                    loss = F.cross_entropy(logits, y)
+
+                    self.zero_grad()
+                    loss.backward()
+                    self.step()
+
+                    logging.debug(f'Sending backward information to client {client_idx}: {feat_client.shape}')
+                    self.client_connection.send(client_idx, False, f'ServerBackwardToClient{client_idx}', feat_client.grad.detach())
+
+                elif re.match(r'Client\d+RequestParameters', msg[0]):
+                    layer_idx = msg[1]
+                    client_idx = int(re.sub('RequestParameters', "", re.sub('Client', "", msg[0])))
+
+                    layer, optim_state_diff = self.dump_layer(layer_idx)
+                    logging.debug(f'Sending layer to client {client_idx}: {type(layer)}, {type(optim_state_diff)}')
+                    client_idx.send(client_idx, False, f'ServerReplyParametersToClient{client_idx}', layer, optim_state_diff)
+
+                elif re.match(r'Client\d+Sync', msg[0]):
+                    model_state, optim_state = msg[1:]
+                    client_idx = int(re.sub('Sync', "", re.sub('Client', "", msg[0])))
+
+                    if self.wait_for_sync[client_idx - 1] is not None:
+                        raise RuntimeError(f'Client {client_idx} is already waiting for sync but sync signal was received again.')
+                    self.wait_for_sync[client_idx - 1] = client_idx, model_state, optim_state
+
+                else:
+                    raise ValueError(f'Unknown message type "{msg[0]}".')
             
             if all([x is not None for x in self.wait_for_sync]):
                 #* perform sync
@@ -207,7 +205,7 @@ class Server(DynamicNetworkTrainer):
                     self.optim.load_state_dict(new_optim_state)
                     
                     for i, (client_idx, model_state, optim_state) in enumerate(self.wait_for_sync):
-                        self.client_connections[i].send(f'ServerSyncWithClient{client_idx}', model_state, optim_state, non_blocking=True)
+                        self.client_connections.send(client_idx, False, f'ServerSyncWithClient{client_idx}', model_state, optim_state)
                     
             
 
