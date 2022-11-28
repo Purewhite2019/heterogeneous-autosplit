@@ -1,9 +1,6 @@
 import torch
 import torch.nn as nn
-from torch.utils.data import Dataset, DataLoader
 import torch.optim as optim
-import torchvision
-from mpi4py import MPI
 
 from typing import List, Tuple, Any
 
@@ -27,7 +24,17 @@ class DynamicNetwork(nn.Module):
 
     def push_back_layer(self, layer: nn.Module) -> None:
         self.model_layers.insert(0, layer)
-    
+
+    #! Caution: the return values shouldn't be modified otherwise the running model parameters will be modified as well.
+    def dump_front_layer(self) -> nn.Module:
+        layer = self.model_layers[0]
+        return layer
+
+    #! Caution: the return values shouldn't be modified otherwise the running model parameters will be modified as well.
+    def dump_back_layer(self) -> nn.Module:
+        layer = self.model_layers[-1]
+        return layer
+
     def pop_front_layer(self) -> nn.Module:
         layer = self.model_layers[0]
         self.model_layers.pop(0)
@@ -101,7 +108,7 @@ class DynamicNetworkTrainer():
     
     def step(self) -> None:
         self.optim.step()
-    
+
     def push_front_layer(self, layer: nn.Module, optim_state_diff: Any) -> None:
         self.model.push_front_layer(layer)
         
@@ -134,9 +141,32 @@ class DynamicNetworkTrainer():
 
         self.optim.load_state_dict(optim_state)
 
+    #! Caution: the returned layer parameters shouldn't be modified otherwise the running model parameters will be modified as well.
+    def dump_front_layer(self) -> Tuple[nn.Module, Any]:
+        layer = self.model.dump_front_layer()
+        optim_state = self.optim.state_dict()
+        
+        if isinstance(self.optim, optim.SGD):
+            optim_state_diff = optim_state['state'][0]
+        else:
+            raise NotImplementedError(f'Optimizer "{type(self.optim)}" is not supported.')
+        
+        return layer, optim_state_diff
+
+    #! Caution: the returned layer parameters shouldn't be modified otherwise the running model parameters will be modified as well.
+    def dump_back_layer(self) -> Tuple[nn.Module, Any]:
+        layer = self.model.dump_back_layer()
+        optim_state = self.optim.state_dict()
+        
+        if isinstance(self.optim, optim.SGD):
+            optim_state_diff = optim_state['state'][-1]
+        else:
+            raise NotImplementedError(f'Optimizer "{type(self.optim)}" is not supported.')
+        
+        return layer, optim_state_diff
+
     def pop_front_layer(self) -> Tuple[nn.Module, Any]:
         layer = self.model.pop_front_layer()
-        
         optim_state = self.optim.state_dict()
         
         if isinstance(self.optim, optim.SGD):
@@ -167,7 +197,6 @@ class DynamicNetworkTrainer():
     def pop_back_layer(self) -> Tuple[nn.Module, Any]:
         layer_idx = len(self.model.model_layers)
         layer = self.model.pop_back_layer()
-        
         optim_state = self.optim.state_dict()
         
         if isinstance(self.optim, optim.SGD):
@@ -190,27 +219,3 @@ class DynamicNetworkTrainer():
         self.optim.load_state_dict(optim_state)
         
         return layer, optim_state_diff
-
-
-def analyze(x: Any, depth: int=0):
-    """util function used to analyze the structure of complex object
-
-    Args:
-        x (Any): Object to analyze
-        depth (int, optional): the depth of current object, used for indent. Defaults to 0.
-    """
-    if isinstance(x, list):
-        print('\t'*depth, '[', sep='')
-        for v in x:
-            analyze(v, depth+1);
-        print('\t'*depth, ']', sep='')
-        
-    elif isinstance(x, dict):
-        print('\t'*depth, '{', sep='')
-        for k, v in x.items():
-            print('\t'*depth, (k if not hasattr(k, 'shape') else k.shape), sep='')
-            analyze(v, depth+1);
-        print('\t'*depth, '}', sep='')
-    
-    else:
-        print('\t'*depth, (x if not hasattr(x, 'shape') else x.shape), sep='')
