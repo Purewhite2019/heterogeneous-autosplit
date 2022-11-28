@@ -1,4 +1,5 @@
 from src.core.trainer import DynamicNetwork, DynamicNetworkTrainer
+from src.core.connections import Connection
 
 import os
 import logging
@@ -14,34 +15,6 @@ from typing import List, Tuple, Any, Callable, Dict, Union
 
 
 LOG_LEVEL = logging.DEBUG
-
-# TODO: Write this using MPI or other communication libraries
-class Connection():
-    """Abstract class defining the connection between 2 endpoints.
-    """
-    def __init__(self, dst_rank: int) -> None:
-        self.dst_rank = dst_rank
-
-    def send(self, *msg, **kwmsg) -> None:
-        """Send a group of message to message queue of the other endpoint.
-        Args:
-            msg (Tuple, optional): Message to be sent in Tuple
-            kwmsg (Dict, optional): Message to be sent in Dict
-        """
-        MPI.COMM_WORLD.send([(msg, kwmsg)], self.dst_rank)
-    
-    def recv(self) -> List[Tuple[Tuple, Dict]]:
-        """Retrieve all messages in the message queue. If the message queue is empty,
-        this function keeps waiting until a message comes.
-        it blocks until a message comes.
-
-        Raises:
-            NotImplementedError: this is an abstract class that should`n be called.
-
-        Returns:
-            List[Tuple, Dict]: List of messages in the message queue
-        """
-        return MPI.COMM_WORLD.recv(self.dst_rank)
 
 
 # DNN Execution sequence: client front -> ... -> client back -> Communication() -> server front -> server back
@@ -150,3 +123,8 @@ class Server(DynamicNetworkTrainer):
     
     def listen(self):
         pass
+
+    def save_model(self, name=None):
+        path = os.path.join(self.dump_path, 'model_checkpoint.pth' if name is None else name)
+        torch.save(self.model, path)
+        logging.info(f'Model saved in {path}')
