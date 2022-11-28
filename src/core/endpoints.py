@@ -86,9 +86,10 @@ class Client(DynamicNetworkTrainer):
         self.server_connection.send(f'Client{self.number}Sync', self.model.state_dict(), self.optim.state_dict())
         msgs = self.server_connection.recv()
         assert len(msgs) == 1 and len(msgs[0][1]) == None
-        msg_type, model_synced = msgs[0][0]
+        msg_type, model_synced, optim_synced = msgs[0][0]
         assert msg_type == f'ServerSyncWithClient{self.number}' and isinstance(model_synced, DynamicNetwork)
         self.model.load_state_dict(model_synced.state_dict())
+        self.optim.load_state_dict(optim_synced)
         
         # TODO: Should we Wait until all are synced?
         # self.server_connection.send(f'Client{self.number}SyncFinished', self.model)
@@ -154,42 +155,61 @@ class Server(DynamicNetworkTrainer):
                         
                         layer, optim_state_diff = self.dump_layer(layer_idx)
                         logging.debug(f'Sending layer to client {client_idx}: {type(layer)}, {type(optim_state_diff)}')
-                        cc.send(f'ServerReplyParametersToClient{client_idx}', layer, optim_state_diff)
+                        cc.send(f'ServerReplyParametersToClient{client_idx}', layer, optim_state_diff, non_blocking=True)
                         
                     elif re.match(r'Client\d+Sync', msg[0]):
                         model_state, optim_state = msg[1:]
                         client_idx = re.sub('Sync', "", re.sub('Client', "", msg[0]))
                         
-                        if self.wait_for_sync[client_idx] is not None:
+                        if self.wait_for_sync[i] is not None:
                             raise RuntimeError(f'Client {client_idx} is already waiting for sync but sync signal was received again.')
-                        self.wait_for_sync[client_idx] = model_state, optim_state
+                        self.wait_for_sync[i] = client_idx, model_state, optim_state
                     
                     else:
                         raise ValueError(f'Unknown message type "{msg[0]}".')
             
-            if self.wait_for_sync.all():
+            if all([x is not None for x in self.wait_for_sync]):
                 #* perform sync
                 with torch.no_grad():
                     new_model_state = self.model.state_dict()
                     new_optim_state = self.optim.state_dict()
                     
+                    # Update model params
                     for k, v in new_model_state.items():
-                        new_layer_state = [v] + [model_state[k] for (model_state, _) in self.wait_for_sync if k in model_state.keys()]
+                        new_layer_state = [v] + [model_state[k] for (_, model_state, _) in self.wait_for_sync if k in model_state.keys()]
                         new_layer_state = torch.stack(new_layer_state)
                         if new_layer_state.dtype == torch.int64:
                             new_layer_state = new_layer_state.sum(dim=0) // new_layer_state.shape[0]
                         else:
                             new_layer_state = new_layer_state.mean(dim=0)
+                        
                         new_model_state[k] = new_layer_state
+                        for (_, model_state, _) in self.wait_for_sync:
+                            if k in model_state.keys():
+                                model_state[k] = new_layer_state
                     
-                    if isinstance(self.optim, torch.optim.SGD):
+                    # Update optim states
+                    if isinstance(self.optim, torch.optim.SGD): # For SGD
                         for k, v in new_optim_state['state'].items():
-                            new_layer_state = [v['momentum_buffer']] + [optim_state['state'][k]['momentum_buffer'] for (_, optim_state) in self.wait_for_sync if k in optim_state['state'].keys()]
+                            new_layer_state = [v['momentum_buffer']] + [optim_state['state'][k]['momentum_buffer'] for (_, _, optim_state) in self.wait_for_sync if k in optim_state['state'].keys()]
                             new_layer_state = torch.stack(new_layer_state)
                             new_layer_state = new_layer_state.mean(dim=0)
+                            
                             new_optim_state[k] = new_layer_state
-                    else:
+                            for (_, _, optim_state) in self.wait_for_sync:
+                                if k in optim_state['state'].keys():
+                                    optim_state['state'][k]['momentum_buffer'] = new_layer_state
+
+                    else:   # For others
                         raise NotImplementedError(f'Optimizer "{type(self.optim)}" is not supported.')
+
+                    self.model.load_state_dict(new_model_state)
+                    self.optim.load_state_dict(new_optim_state)
+                    
+                    for i, (client_idx, model_state, optim_state) in enumerate(self.wait_for_sync):
+                        self.client_connections[i].send(f'ServerSyncWithClient{client_idx}', model_state, optim_state, non_blocking=True)
+                    
+            
 
     def save_model(self, name=None):
         path = os.path.join(self.dump_path, 'model_checkpoint.pth' if name is None else name)
