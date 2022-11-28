@@ -2,6 +2,7 @@ from src.core.trainer import DynamicNetwork, DynamicNetworkTrainer
 from src.core.connections import Connection
 
 import os
+import re
 import logging
 from collections import deque
 
@@ -9,6 +10,7 @@ import torch
 import torch.nn as nn
 import torchvision
 from torch.utils.data import Dataset, DataLoader
+import torch.nn.functional as F
 
 from mpi4py import MPI
 from typing import List, Tuple, Any, Callable, Dict, Union
@@ -53,7 +55,7 @@ class Client(DynamicNetworkTrainer):
         assert len(msgs) == 1 and len(msgs[0][1]) == None
         msg_type, layer, optim_state_diff = msgs[0][0]
         assert msg_type == f'ServerReplyParametersToClient{self.number}' and isinstance(layer, nn.Module)
-        logging.debug(f'Received backward information from server: {msg_type}, {type(layer)}, {type(optim_state_diff)}')
+        logging.debug(f'Received layer from server: {msg_type}, {type(layer)}, {type(optim_state_diff)}')
 
         self.push_back_layer(layer, optim_state_diff)
         logging.info('Right-shift finished')
@@ -81,7 +83,7 @@ class Client(DynamicNetworkTrainer):
     def wait_for_sync(self) -> None:
         logging.info('Synchronizing with the server...')
 
-        self.server_connection.send(f'Client{self.number}Sync', self.model)
+        self.server_connection.send(f'Client{self.number}Sync', self.model.state_dict(), self.optim.state_dict())
         msgs = self.server_connection.recv()
         assert len(msgs) == 1 and len(msgs[0][1]) == None
         msg_type, model_synced = msgs[0][0]
@@ -111,8 +113,8 @@ class Server(DynamicNetworkTrainer):
         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
         self.dump_path = dump_path
         self.client_connections = client_connections
-        self.messages = deque()
-
+        self.wait_for_sync = [None] * len(client_connections)
+        
         os.makedirs(self.dump_path, exist_ok=True)
         logging.basicConfig(format=f'%(asctime)s - %(filename)s[line:%(lineno)d] - [Server] %(levelname)s: %(message)s',
                     level=LOG_LEVEL,
@@ -120,9 +122,74 @@ class Server(DynamicNetworkTrainer):
                     filemode='a')
 
         self.model.to(self.device)
-    
+        
     def listen(self):
-        pass
+        while (True):
+            for i, cc in enumerate(self.client_connections):
+                msgs = cc.recv()
+                for (msg, kwmsg) in msgs:
+                    assert kwmsg == None    # We don`t use kwmsg currently.
+                    if re.match(r'Client\d+Forward', msg[0]):
+                        layer_idx, feat_client, y = msg[1:]
+                        client_idx = re.sub('Forward', "", re.sub('Client', "", msg[0]))
+                        
+                        logging.debug(f'Received forward information from client {client_idx}: {layer_idx}, {feat_client.shape}, {y.shape}')
+                        
+                        feat_client, y = feat_client.to(self.device), y.to(self.device)
+                        feat_client.requires_grad_(True)
+                        
+                        logits = self.forward(feat_client, layer_idx)
+                        loss = F.cross_entropy(logits, y)
+                        
+                        self.zero_grad()
+                        loss.backward()
+                        self.step()
+                        
+                        logging.debug(f'Sending backward information to client {client_idx}: {feat_client.shape}')
+                        cc.send(f'ServerBackwardToClient{client_idx}', feat_client.grad.detach(), non_blocking=True)
+                    
+                    elif re.match(r'Client\d+RequestParameters', msg[0]):
+                        layer_idx = msg[1]
+                        client_idx = re.sub('RequestParameters', "", re.sub('Client', "", msg[0]))
+                        
+                        layer, optim_state_diff = self.dump_layer(layer_idx)
+                        logging.debug(f'Sending layer to client {client_idx}: {type(layer)}, {type(optim_state_diff)}')
+                        cc.send(f'ServerReplyParametersToClient{client_idx}', layer, optim_state_diff)
+                        
+                    elif re.match(r'Client\d+Sync', msg[0]):
+                        model_state, optim_state = msg[1:]
+                        client_idx = re.sub('Sync', "", re.sub('Client', "", msg[0]))
+                        
+                        if self.wait_for_sync[client_idx] is not None:
+                            raise RuntimeError(f'Client {client_idx} is already waiting for sync but sync signal was received again.')
+                        self.wait_for_sync[client_idx] = model_state, optim_state
+                    
+                    else:
+                        raise ValueError(f'Unknown message type "{msg[0]}".')
+            
+            if self.wait_for_sync.all():
+                #* perform sync
+                with torch.no_grad():
+                    new_model_state = self.model.state_dict()
+                    new_optim_state = self.optim.state_dict()
+                    
+                    for k, v in new_model_state.items():
+                        new_layer_state = [v] + [model_state[k] for (model_state, _) in self.wait_for_sync if k in model_state.keys()]
+                        new_layer_state = torch.stack(new_layer_state)
+                        if new_layer_state.dtype == torch.int64:
+                            new_layer_state = new_layer_state.sum(dim=0) // new_layer_state.shape[0]
+                        else:
+                            new_layer_state = new_layer_state.mean(dim=0)
+                        new_model_state[k] = new_layer_state
+                    
+                    if isinstance(self.optim, torch.optim.SGD):
+                        for k, v in new_optim_state['state'].items():
+                            new_layer_state = [v['momentum_buffer']] + [optim_state['state'][k]['momentum_buffer'] for (_, optim_state) in self.wait_for_sync if k in optim_state['state'].keys()]
+                            new_layer_state = torch.stack(new_layer_state)
+                            new_layer_state = new_layer_state.mean(dim=0)
+                            new_optim_state[k] = new_layer_state
+                    else:
+                        raise NotImplementedError(f'Optimizer "{type(self.optim)}" is not supported.')
 
     def save_model(self, name=None):
         path = os.path.join(self.dump_path, 'model_checkpoint.pth' if name is None else name)

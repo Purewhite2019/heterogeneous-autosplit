@@ -15,8 +15,8 @@ class DynamicNetwork(nn.Module):
         super().__init__()
         self.model_layers = model_layers
     
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        for layer in self.model_layers:
+    def forward(self, x: torch.Tensor, idx_start: int=0) -> torch.Tensor:
+        for layer in self.model_layers[idx_start:]:
             x = layer(x)
 
     def push_front_layer(self, layer: nn.Module) -> None:
@@ -91,15 +91,17 @@ class DynamicNetworkTrainer():
         
         self.last_forward_output = None
     
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        self.last_forward_output = self.model.forward(x)
+    def forward(self, x: torch.Tensor, idx_start: int=0) -> torch.Tensor:
+        self.last_forward_output = self.model.forward(x, idx_start)
         return self.last_forward_output.detach()
     
     def backward(self, grad: torch.Tensor) -> None:
         self.last_forward_output.backward(grad)
     
     def zero_grad(self) -> None:
-        self.optim.zero_grad()
+        self.optim.zero_grad(set_to_none=True)
+        #* `set_to_none=True` to avoid performing optimizer algorithm on layers that only exists in client end.
+        #* This may affect, for example, momentum in SGD.
     
     def step(self) -> None:
         self.optim.step()

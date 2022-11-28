@@ -7,9 +7,10 @@ class Connection():
     def __init__(self) -> None:
         pass
 
-    def send(self, *msg, **kwmsg) -> None:
+    def send(self, non_blocking=False, *msg, **kwmsg) -> None:
         """Send a group of message to message queue of the other endpoint.
         Args:
+            non_blocking (bool): if set to False, it blocks until a message comes.
             msg (Tuple, optional): Message to be sent in Tuple
             kwmsg (Dict, optional): Message to be sent in Dict
             
@@ -18,10 +19,12 @@ class Connection():
         """
         raise NotImplementedError()
     
-    def recv(self) -> List[Tuple[Tuple, Dict]]:
+    def recv(self, non_blocking=False) -> List[Tuple[Tuple, Dict]]:
         """Retrieve all messages in the message queue. If the message queue is empty,
-        this function keeps waiting until a message comes.
         it blocks until a message comes.
+
+        Args:
+            non_blocking (bool): if set to False, it blocks until a message comes.
 
         Raises:
             NotImplementedError: this is an abstract class that should`n be called.
@@ -39,19 +42,29 @@ class MPIConnection(Connection):
         super().__init__()
         self.dst_rank = dst_rank
 
-    def send(self, *msg, **kwmsg) -> None:
+    def send(self, non_blocking=False, *msg, **kwmsg) -> None:
         """Send a group of message to message queue of the other endpoint.
         Args:
+            non_blocking (bool): if set to False, it blocks until a message comes.
             msg (Tuple, optional): Message to be sent in Tuple
             kwmsg (Dict, optional): Message to be sent in Dict
         """
-        MPI.COMM_WORLD.send([(msg, kwmsg)], self.dst_rank)
+        if non_blocking:
+            MPI.COMM_WORLD.isend([(msg, kwmsg)], self.dst_rank)
+        else:
+            MPI.COMM_WORLD.send([(msg, kwmsg)], self.dst_rank)
     
-    def recv(self) -> List[Tuple[Tuple, Dict]]:
+    def recv(self, non_blocking=False) -> List[Tuple[Tuple, Dict]]:
         """Retrieve all messages in the message queue. If the message queue is empty,
         it blocks until a message comes.
+
+        Args:
+            non_blocking (bool): if set to False, it blocks until a message comes.
 
         Returns:
             List[Tuple, Dict]: List of messages in the message queue
         """
-        return MPI.COMM_WORLD.recv(self.dst_rank)
+        if non_blocking:
+            return MPI.COMM_WORLD.irecv(self.dst_rank)
+        else:
+            return MPI.COMM_WORLD.recv(self.dst_rank)
