@@ -65,19 +65,18 @@ class Client(DynamicNetworkTrainer):
         for e in range(n_epoch):
             for X, y in self.dataloader:
                 X, y = X.to(self.device), y.to(self.device)
-                feat_client = self.model(X)
+                feat_client = self.forward(X)
                 
                 logging.debug(f'Sending forward information to server: {len(self.model.model_layers)}, {feat_client.shape}, {y.shape}')
                 self.server_connection.send(0, False, f'Client{self.number}Forward', len(self.model.model_layers), feat_client, y)
 
                 msgs = self.server_connection.recv(False, source=0)
-                print(msgs)
                 assert len(msgs) == 1 and msgs[0][1] == {}
                 msg_type, feat_grad = msgs[0][0]
                 assert msg_type == f'ServerBackwardToClient{self.number}' and isinstance(feat_grad, torch.Tensor)
                 feat_grad = feat_grad.to(self.device)
                 logging.debug(f'Received backward information from server: {msg_type}, {feat_grad.shape}')
-                
+
                 self.zero_grad()
                 self.backward(feat_grad)
                 self.step()

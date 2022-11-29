@@ -93,7 +93,7 @@ class DynamicNetworkTrainer():
         self.last_forward_output = None
     
     def forward(self, x: torch.Tensor, idx_start: int=0) -> torch.Tensor:
-        self.last_forward_output = self.model.forward(x, idx_start)
+        self.last_forward_output = self.model(x, idx_start)
         return self.last_forward_output.detach()
     
     def backward(self, grad: torch.Tensor) -> None:
