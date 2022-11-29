@@ -18,6 +18,7 @@ class DynamicNetwork(nn.Module):
     def forward(self, x: torch.Tensor, idx_start: int=0) -> torch.Tensor:
         for layer in self.model_layers[idx_start:]:
             x = layer(x)
+        return x
 
     def push_front_layer(self, layer: nn.Module) -> None:
         self.model_layers.append(layer)
