@@ -17,6 +17,9 @@ from typing import List, Tuple, Any, Callable, Dict, Union
 
 
 LOG_LEVEL = logging.DEBUG
+BASIC_FORMAT_CLIENT = '%(asctime)s - %(filename)s[line:%(lineno)d] - [Client (CLIENTNO)] %(levelname)s: %(message)s'
+BASIC_FORMAT_SERVER = f'%(asctime)s - %(filename)s[line:%(lineno)d] - [Server] %(levelname)s: %(message)s'
+DATE_FORMAT = '%Y-%m-%d %H:%M:%S'
 
 
 # DNN Execution sequence: client front -> ... -> client back -> Communication() -> server front -> server back
@@ -35,10 +38,23 @@ class Client(DynamicNetworkTrainer):
         self.server_connection = server_connection
         
         os.makedirs(self.dump_path, exist_ok=True)
-        logging.basicConfig(format=f'%(asctime)s - %(filename)s[line:%(lineno)d] - [Client {self.number}] %(levelname)s: %(message)s',
-                    level=LOG_LEVEL,
-                    filename=os.path.join(self.dump_path, f'client{self.number}.log'),
-                    filemode='a')
+
+        # logging settings
+        logger = logging.getLogger()
+        
+        logger.setLevel(LOG_LEVEL)
+        
+        basic_format = re.sub('(CLIENTNO)', str(self.number), BASIC_FORMAT_CLIENT)
+        formatter = logging.Formatter(basic_format, DATE_FORMAT)
+        
+        chlr = logging.StreamHandler()
+        chlr.setFormatter(formatter)
+        
+        fhlr = logging.FileHandler(filename=os.path.join(self.dump_path, f'client{self.number}.log'), mode='a')
+        fhlr.setFormatter(formatter)
+        
+        logger.addHandler(chlr)
+        logger.addHandler(fhlr)
 
         self.model.to(self.device)
         self.model.train()
@@ -118,10 +134,22 @@ class Server(DynamicNetworkTrainer):
         self.wait_for_sync = [None] * client_num
         
         os.makedirs(self.dump_path, exist_ok=True)
-        logging.basicConfig(format=f'%(asctime)s - %(filename)s[line:%(lineno)d] - [Server] %(levelname)s: %(message)s',
-                    level=LOG_LEVEL,
-                    filename=os.path.join(self.dump_path, f'server.log'),
-                    filemode='a')
+        
+        # logging settings
+        logger = logging.getLogger()
+        
+        logger.setLevel(LOG_LEVEL)
+        
+        formatter = logging.Formatter(BASIC_FORMAT_SERVER, DATE_FORMAT)
+        
+        chlr = logging.StreamHandler()
+        chlr.setFormatter(formatter)
+        
+        fhlr = logging.FileHandler(filename=os.path.join(self.dump_path, f'server.log'), mode='a')
+        fhlr.setFormatter(formatter)
+        
+        logger.addHandler(chlr)
+        logger.addHandler(fhlr)
 
         self.model.to(self.device)
         self.model.train()
@@ -134,23 +162,26 @@ class Server(DynamicNetworkTrainer):
                 if re.match(r'Client\d+Forward', msg[0]):
                     layer_idx, feat_client, y = msg[1:]
                     client_idx = int(re.sub('Forward', "", re.sub('Client', "", msg[0])))
-                    print(f'Begin to process request from client {client_idx}')
 
                     logging.debug(f'Received forward information from client {client_idx}: {layer_idx}, {feat_client.shape}, {y.shape}')
 
                     feat_client, y = feat_client.to(self.device), y.to(self.device)
                     feat_client.requires_grad_(True)
+                    # Server doesn't need self.forward(), self.model.forward() is OK, because it doesn't need to store any extra information..
                     logits = self.model(feat_client, layer_idx)
                     loss = F.cross_entropy(logits, y)
 
                     self.zero_grad()
                     loss.backward()
                     self.step()
+                    
+                    corrects = (torch.argmax(logits, dim=-1) == y).sum()
+                    n_samples = y.shape[0]
+                    logging.info(f'Accuracy of batch from client {client_idx}: {corrects/n_samples:.2f}({corrects}/{n_samples})')
 
-                    print(f'Requests from client {client_idx} is completed, begin to transfer grad to source client')
                     logging.debug(f'Sending backward information to client {client_idx}: {feat_client.shape}')
                     self.client_connection.send(client_idx, False, f'ServerBackwardToClient{client_idx}', feat_client.grad.detach())
-                    print(f'Grad return to client {client_idx} successfully')
+                    logging.debug(f'Backward information are successfully sent to client {client_idx}')
 
                 elif re.match(r'Client\d+RequestParameters', msg[0]):
                     layer_idx = msg[1]
@@ -158,7 +189,7 @@ class Server(DynamicNetworkTrainer):
 
                     layer, optim_state_diff = self.dump_layer(layer_idx)
                     logging.debug(f'Sending layer to client {client_idx}: {type(layer)}, {type(optim_state_diff)}')
-                    client_idx.send(client_idx, False, f'ServerReplyParametersToClient{client_idx}', layer, optim_state_diff)
+                    self.client_connections.send(client_idx, False, f'ServerReplyParametersToClient{client_idx}', layer, optim_state_diff)
 
                 elif re.match(r'Client\d+Sync', msg[0]):
                     model_state, optim_state = msg[1:]
@@ -195,13 +226,15 @@ class Server(DynamicNetworkTrainer):
                     if isinstance(self.optim, torch.optim.SGD): # For SGD
                         for k, v in new_optim_state['state'].items():
                             new_layer_state = [v['momentum_buffer']] + [optim_state['state'][k]['momentum_buffer'] for (_, _, optim_state) in self.wait_for_sync if k in optim_state['state'].keys()]
-                            new_layer_state = torch.stack(new_layer_state)
-                            new_layer_state = new_layer_state.mean(dim=0)
                             
-                            new_optim_state[k] = new_layer_state
-                            for (_, _, optim_state) in self.wait_for_sync:
-                                if k in optim_state['state'].keys():
-                                    optim_state['state'][k]['momentum_buffer'] = new_layer_state
+                            if (len(new_layer_state) > 1):  # When more than 1 client participates in training the layer, an update is needed.
+                                new_layer_state = torch.stack(new_layer_state)
+                                new_layer_state = new_layer_state.mean(dim=0)
+                                
+                                new_optim_state[k] = new_layer_state
+                                for (_, _, optim_state) in self.wait_for_sync:
+                                    if k in optim_state['state'].keys():
+                                        optim_state['state'][k]['momentum_buffer'] = new_layer_state
 
                     else:   # For others
                         raise NotImplementedError(f'Optimizer "{type(self.optim)}" is not supported.')
