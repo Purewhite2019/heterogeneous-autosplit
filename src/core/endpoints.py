@@ -52,7 +52,7 @@ class Client(DynamicNetworkTrainer):
         logging.info('Right-shifting split point...')
         
         self.server_connection.send(0, f'Client{self.number}RequestParameters', len(self.model.model_layers))
-        msgs = self.server_connection.recv()
+        msgs = self.server_connection.recv(False, 0)
         assert len(msgs) == 1 and len(msgs[0][1]) == None
         msg_type, layer, optim_state_diff = msgs[0][0]
         assert msg_type == f'ServerReplyParametersToClient{self.number}' and isinstance(layer, nn.Module)
@@ -65,13 +65,14 @@ class Client(DynamicNetworkTrainer):
         for e in range(n_epoch):
             for X, y in self.dataloader:
                 X, y = X.to(self.device), y.to(self.device)
-                feat_client = self.forward(X)
+                feat_client = self.model(X)
                 
                 logging.debug(f'Sending forward information to server: {len(self.model.model_layers)}, {feat_client.shape}, {y.shape}')
                 self.server_connection.send(0, False, f'Client{self.number}Forward', len(self.model.model_layers), feat_client, y)
 
-                msgs = self.server_connection.recv()
-                assert len(msgs) == 1 and len(msgs[0][1]) == None
+                msgs = self.server_connection.recv(False, source=0)
+                print(msgs)
+                assert len(msgs) == 1 and msgs[0][1] == {}
                 msg_type, feat_grad = msgs[0][0]
                 assert msg_type == f'ServerBackwardToClient{self.number}' and isinstance(feat_grad, torch.Tensor)
                 feat_grad = feat_grad.to(self.device)
@@ -85,8 +86,8 @@ class Client(DynamicNetworkTrainer):
         logging.info('Synchronizing with the server...')
 
         self.server_connection.send(0, False, f'Client{self.number}Sync', self.model.state_dict(), self.optim.state_dict())
-        msgs = self.server_connection.recv()
-        assert len(msgs) == 1 and len(msgs[0][1]) == None
+        msgs = self.server_connection.recv(False, source=0)
+        assert len(msgs) == 1 and msgs[0][1] == {}
         msg_type, model_synced, optim_synced = msgs[0][0]
         assert msg_type == f'ServerSyncWithClient{self.number}' and isinstance(model_synced, DynamicNetwork)
         self.model.load_state_dict(model_synced.state_dict())
@@ -134,20 +135,23 @@ class Server(DynamicNetworkTrainer):
                 if re.match(r'Client\d+Forward', msg[0]):
                     layer_idx, feat_client, y = msg[1:]
                     client_idx = int(re.sub('Forward', "", re.sub('Client', "", msg[0])))
+                    print(f'Begin to process request from client {client_idx}')
 
                     logging.debug(f'Received forward information from client {client_idx}: {layer_idx}, {feat_client.shape}, {y.shape}')
 
                     feat_client, y = feat_client.to(self.device), y.to(self.device)
                     feat_client.requires_grad_(True)
-                    logits = self.forward(feat_client, layer_idx)
+                    logits = self.model(feat_client, layer_idx)
                     loss = F.cross_entropy(logits, y)
 
                     self.zero_grad()
                     loss.backward()
                     self.step()
 
+                    print(f'Requests from client {client_idx} is completed, begin to transfer grad to source client')
                     logging.debug(f'Sending backward information to client {client_idx}: {feat_client.shape}')
                     self.client_connection.send(client_idx, False, f'ServerBackwardToClient{client_idx}', feat_client.grad.detach())
+                    print(f'Grad return to client {client_idx} successfully')
 
                 elif re.match(r'Client\d+RequestParameters', msg[0]):
                     layer_idx = msg[1]

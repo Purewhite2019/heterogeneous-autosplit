@@ -19,7 +19,7 @@ class Connection():
         """
         raise NotImplementedError()
     
-    def recv(self, non_blocking=False) -> List[Tuple[Tuple, Dict]]:
+    def recv(self, non_blocking=False, **kwargs) -> List[Tuple[Tuple, Dict]]:
         """Retrieve all messages in the message queue. If the message queue is empty,
         it blocks until a message comes.
 
@@ -50,11 +50,11 @@ class MPIConnection(Connection):
             kwmsg (Dict, optional): Message to be sent in Dict
         """
         if non_blocking:
-            MPI.COMM_WORLD.isend([(msg, kwmsg)], dest)
+            MPI.COMM_WORLD.isend([(msg, kwmsg)], dest=dest)
         else:
-            MPI.COMM_WORLD.send([(msg, kwmsg)], dest)
+            MPI.COMM_WORLD.send([(msg, kwmsg)], dest=dest)
     
-    def recv(self, non_blocking=False) -> List[Tuple[Tuple, Dict]]:
+    def recv(self, non_blocking=False, **kwargs) -> List[Tuple[Tuple, Dict]]:
         """Retrieve all messages in the message queue. If the message queue is empty,
         it blocks until a message comes.
 
@@ -65,6 +65,6 @@ class MPIConnection(Connection):
             List[Tuple, Dict]: List of messages in the message queue
         """
         if non_blocking:
-            return MPI.COMM_WORLD.recv()
+            return MPI.COMM_WORLD.recv(**kwargs)
         else:
-            return MPI.COMM_WORLD.recv()
+            return MPI.COMM_WORLD.recv(**kwargs)
