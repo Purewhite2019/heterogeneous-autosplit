@@ -41,6 +41,7 @@ class Client(DynamicNetworkTrainer):
                     filemode='a')
 
         self.model.to(self.device)
+        self.model.train()
     
     def left_shift_split_point(self):
         logging.info('Left-shifting split point...')
@@ -123,6 +124,7 @@ class Server(DynamicNetworkTrainer):
                     filemode='a')
 
         self.model.to(self.device)
+        self.model.train()
         
     def listen(self):
         while (True):

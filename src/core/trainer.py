@@ -13,7 +13,7 @@ class DynamicNetwork(nn.Module):
     """
     def __init__(self, model_layers: List[nn.Module]) -> None:
         super().__init__()
-        self.model_layers = model_layers
+        self.model_layers = nn.ModuleList(model_layers)
     
     def forward(self, x: torch.Tensor, idx_start: int=0) -> torch.Tensor:
         for layer in self.model_layers[idx_start:]:

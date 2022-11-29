@@ -62,6 +62,7 @@ class Topology_Example(Topology):
         
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
         model = torch.load(self.dump_path, 'model_finished.pth').to(device)
+        model.eval()
         
         for X, y in test_loader:
             pass
