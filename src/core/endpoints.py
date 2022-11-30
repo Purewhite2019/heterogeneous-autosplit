@@ -2,6 +2,7 @@ from src.core.trainer import DynamicNetwork, DynamicNetworkTrainer
 from src.core.connections import Connection
 
 import os
+import time
 import re
 import logging
 from collections import deque
@@ -82,10 +83,13 @@ class Client(DynamicNetworkTrainer):
         for e in trange(n_epoch):
             for X, y in self.dataloader:
                 X, y = X.to(self.device), y.to(self.device)
+                infer_stime = time.time()
                 feat_client = self.forward(X)
-                
+                infer_mtime = time.time()
+
                 logging.debug(f'Sending forward information to server: {len(self.model.model_layers)}, {feat_client.shape}, {y.shape}')
                 self.server_connection.send(0, False, f'Client{self.number}Forward', len(self.model.model_layers), feat_client, y)
+                infer_etime = time.time()
 
                 msgs = self.server_connection.recv(False, source=0)
                 assert len(msgs) == 1 and msgs[0][1] == {}
@@ -97,6 +101,8 @@ class Client(DynamicNetworkTrainer):
                 self.zero_grad()
                 self.backward(feat_grad)
                 self.step()
+                train_etime = time.time()
+                logging.info(f'For a batch size of {X.shape[0]}, it cost {infer_mtime - infer_stime} second to forward in local, {infer_etime - infer_mtime} second to transfer, forward and backward in cloud, {train_etime - infer_etime} second to backward in local')
     
     def wait_for_sync(self) -> None:
         logging.info('Synchronizing with the server...')

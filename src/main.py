@@ -48,6 +48,7 @@ if __name__ == '__main__':
 
     dump_path = f'experiment/example/{time.strftime("%Y%m%d-%H%M%S", time.localtime())}'
 
+    client_layer_num = [2, 5]
     if is_server(rank):
         server_to_client_connection = MPIConnection(0)
         print('Server2Clients\' connections are all established')
@@ -59,7 +60,7 @@ if __name__ == '__main__':
         runner.save_model('model_finished.pth')
     else:
         client_to_server_connection = MPIConnection(rank)
-        runner = Client(rank, dump_path, feat_extractor, 'sgd', dict(lr=1e-2, momentum=0.99), dataloader_fn,
+        runner = Client(rank, dump_path, feat_extractor[:client_layer_num[rank - 1]], 'sgd', dict(lr=1e-2, momentum=0.99), dataloader_fn,
                server_connection=client_to_server_connection)
         print(f'Client {rank} begins training')
         runner.train(n_epoch=50)
