@@ -105,8 +105,8 @@ class Client(DynamicNetworkTrainer):
         msgs = self.server_connection.recv(False, source=0)
         assert len(msgs) == 1 and msgs[0][1] == {}
         msg_type, model_synced, optim_synced = msgs[0][0]
-        assert msg_type == f'ServerSyncWithClient{self.number}' and isinstance(model_synced, DynamicNetwork)
-        self.model.load_state_dict(model_synced.state_dict())
+        assert msg_type == f'ServerSyncWithClient{self.number}' # and isinstance(model_synced, DynamicNetwork)
+        self.model.load_state_dict(model_synced)
         self.optim.load_state_dict(optim_synced)
         
         # TODO: Should we Wait until all are synced?
@@ -117,6 +117,19 @@ class Client(DynamicNetworkTrainer):
 
         logging.info('Synchronization succeeded...')
 
+    def test(self, test_dataloader: DataLoader):
+        for X, y in test_dataloader:
+            X, y = X.to(self.device), y.to(self.device)
+            feat_client = self.forward(X)
+
+            logging.debug(
+                f'Sending forward information to server: {len(self.model.model_layers)}, {feat_client.shape}, {y.shape}')
+            self.server_connection.send(0, False, f'Client{self.number}TestForward', len(self.model.model_layers),
+                                        feat_client, y)
+            logging.debug(
+                f'Client {self.number} received the ACK signal from server')
+            msgs = self.server_connection.recv(False, source=0)
+            assert len(msgs) == 1 and msgs[0][1] == {}
     #! TODO: when to sync with server? how to sync with server?
     #* my idea: when an epoch of all client ends or a timer expires, they synchronize with the server.
     #* and upon synchronization with server, clients adapt its split points accordingly. 
@@ -132,6 +145,7 @@ class Server(DynamicNetworkTrainer):
         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
         self.dump_path = dump_path
         self.client_connection = client_connection
+        self.client_num = client_num
         self.wait_for_sync = [None] * client_num
         
         os.makedirs(self.dump_path, exist_ok=True)
@@ -199,6 +213,25 @@ class Server(DynamicNetworkTrainer):
                     if self.wait_for_sync[client_idx - 1] is not None:
                         raise RuntimeError(f'Client {client_idx} is already waiting for sync but sync signal was received again.')
                     self.wait_for_sync[client_idx - 1] = client_idx, model_state, optim_state
+                elif re.match(r'Client\d+TestForward', msg[0]):
+                    layer_idx, feat_client, y = msg[1:]
+                    client_idx = int(re.sub('TestForward', "", re.sub('Client', "", msg[0])))
+
+                    logging.debug(
+                        f'Received forward information from client {client_idx}: {layer_idx}, {feat_client.shape}, {y.shape}')
+
+                    feat_client, y = feat_client.to(self.device), y.to(self.device)
+                    # Server doesn't need self.forward(), self.model.forward() is OK, because it doesn't need to store any extra information..
+                    logits = self.model(feat_client, layer_idx)
+
+                    corrects = (torch.argmax(logits, dim=-1) == y).sum()
+                    n_samples = y.shape[0]
+                    logging.info(
+                        f'Test accuracy of batch from client {client_idx}: {corrects / n_samples:.2f}({corrects}/{n_samples})')
+
+                    logging.debug(f'Sending acknowledge information to client {client_idx}: {feat_client.shape}')
+                    self.client_connection.send(client_idx, False, f'ServerToClient{client_idx}')
+                    logging.debug(f'Acknowledge information are successfully sent to client {client_idx}')
 
                 else:
                     raise ValueError(f'Unknown message type "{msg[0]}".')
@@ -245,9 +278,9 @@ class Server(DynamicNetworkTrainer):
                     
                     for i, (client_idx, model_state, optim_state) in enumerate(self.wait_for_sync):
                         self.client_connection.send(client_idx, False, f'ServerSyncWithClient{client_idx}', model_state, optim_state)
-                break
-                    
-            
+                    self.wait_for_sync = [None] * self.client_num
+
+
 
     def save_model(self, name=None):
         path = os.path.join(self.dump_path, 'model_checkpoint.pth' if name is None else name)

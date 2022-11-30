@@ -62,18 +62,15 @@ if __name__ == '__main__':
         runner = Client(rank, dump_path, feat_extractor, 'sgd', dict(lr=1e-2, momentum=0.99), dataloader_fn,
                server_connection=client_to_server_connection)
         print(f'Client {rank} begins training')
-        runner.train(n_epoch=1)
+        runner.train(n_epoch=50)
         print(f'Client {rank} terminate training')
         runner.wait_for_sync()
-        # test_dataset = torchvision.datasets.CIFAR10(root='data/cifar10/', train=False, download=True,
-        #                                             transform=T.Compose([T.ToTensor(),
-        #                                                                  T.Normalize(mean=(0.4914, 0.4822, 0.4465),
-        #                                                                              std=(0.247, 0.243, 0.261))]))
-        # test_loader = DataLoader(test_dataset, batch_size=128, shuffle=False, pin_memory=True, drop_last=False)
-        #
-        # device = 'cuda' if torch.cuda.is_available() else 'cpu'
-        # model = torch.load(dump_path, 'model_finished.pth').to(device)
-        #
-        # for X, y in test_loader:
-        #     pass
-        #     # TODO: test model accuracy here
+        print(f'Client {rank} sync completed')
+        if rank == 1:
+            test_dataset = torchvision.datasets.CIFAR10(root='data/cifar10/', train=False, download=True,
+                                                        transform=T.Compose([T.ToTensor(),
+                                                                             T.Normalize(mean=(0.4914, 0.4822, 0.4465),
+                                                                                         std=(0.247, 0.243, 0.261))]))
+            test_dataloader = DataLoader(test_dataset, batch_size=128, shuffle=False, pin_memory=True, drop_last=False)
+            runner.test(test_dataloader)
+
