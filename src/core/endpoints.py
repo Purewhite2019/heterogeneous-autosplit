@@ -5,6 +5,7 @@ import os
 import re
 import logging
 from collections import deque
+from tqdm import trange
 
 import torch
 import torch.nn as nn
@@ -16,7 +17,7 @@ from mpi4py import MPI
 from typing import List, Tuple, Any, Callable, Dict, Union
 
 
-LOG_LEVEL = logging.DEBUG
+LOG_LEVEL = logging.INFO
 BASIC_FORMAT_CLIENT = '%(asctime)s - %(filename)s[line:%(lineno)d] - [Client (CLIENTNO)] %(levelname)s: %(message)s'
 BASIC_FORMAT_SERVER = f'%(asctime)s - %(filename)s[line:%(lineno)d] - [Server] %(levelname)s: %(message)s'
 DATE_FORMAT = '%Y-%m-%d %H:%M:%S'
@@ -78,7 +79,7 @@ class Client(DynamicNetworkTrainer):
         logging.info('Right-shift finished')
 
     def train(self, n_epoch: int=1) -> None:
-        for e in range(n_epoch):
+        for e in trange(n_epoch):
             for X, y in self.dataloader:
                 X, y = X.to(self.device), y.to(self.device)
                 feat_client = self.forward(X)
@@ -243,7 +244,8 @@ class Server(DynamicNetworkTrainer):
                     self.optim.load_state_dict(new_optim_state)
                     
                     for i, (client_idx, model_state, optim_state) in enumerate(self.wait_for_sync):
-                        self.client_connections.send(client_idx, False, f'ServerSyncWithClient{client_idx}', model_state, optim_state)
+                        self.client_connection.send(client_idx, False, f'ServerSyncWithClient{client_idx}', model_state, optim_state)
+                break
                     
             
 

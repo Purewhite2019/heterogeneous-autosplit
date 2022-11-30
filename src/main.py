@@ -62,7 +62,7 @@ if __name__ == '__main__':
         runner = Client(rank, dump_path, feat_extractor, 'sgd', dict(lr=1e-2, momentum=0.99), dataloader_fn,
                server_connection=client_to_server_connection)
         print(f'Client {rank} begins training')
-        runner.train(n_epoch=50)
+        runner.train(n_epoch=1)
         print(f'Client {rank} terminate training')
         runner.wait_for_sync()
         # test_dataset = torchvision.datasets.CIFAR10(root='data/cifar10/', train=False, download=True,
