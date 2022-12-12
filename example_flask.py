@@ -30,6 +30,7 @@ def recv() -> None:
         if msg == 'Accuracy of the current batch':
             accs.append(flask_pipe.recv())
         elif msg == 'Topology changed to':
+            global topology
             topology = flask_pipe.recv()
         else:
             raise ValueError(f'Invalid message from the pipe: {msg}')
