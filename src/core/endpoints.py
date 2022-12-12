@@ -60,6 +60,8 @@ class Client(DynamicNetworkTrainer):
 
         self.model.to(self.device)
         self.model.train()
+        
+        self.server_connection.send(0, False, f'Client{self.number}Ready')  # This message helps TCPConnection to match client sockets with their client IDs. 
     
     def left_shift_split_point(self):
         logging.info('Left-shifting split point...')
@@ -219,6 +221,7 @@ class Server(DynamicNetworkTrainer):
                     if self.wait_for_sync[client_idx - 1] is not None:
                         raise RuntimeError(f'Client {client_idx} is already waiting for sync but sync signal was received again.')
                     self.wait_for_sync[client_idx - 1] = client_idx, model_state, optim_state
+                
                 elif re.match(r'Client\d+TestForward', msg[0]):
                     layer_idx, feat_client, y = msg[1:]
                     client_idx = int(re.sub('TestForward', "", re.sub('Client', "", msg[0])))
@@ -239,6 +242,10 @@ class Server(DynamicNetworkTrainer):
                     self.client_connection.send(client_idx, False, f'ServerToClient{client_idx}')
                     logging.debug(f'Acknowledge information are successfully sent to client {client_idx}')
 
+                elif re.match(r'Client\d+Ready', msg):
+                    client_idx = int(re.sub('Ready', "", re.sub('Client', "", msg)))
+                    logging.info(f'Client {client_idx} is ready for training.')
+                
                 else:
                     raise ValueError(f'Unknown message type "{msg[0]}".')
             
