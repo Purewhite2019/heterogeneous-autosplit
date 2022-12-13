@@ -1,20 +1,11 @@
-import os
 import sys
 sys.path.append('../')
 
-from src.core import Client, Server, MPIConnection
-from src.models.cifar import mobilenet
-
-import torch
-import numpy as np
 import time
-from torch.utils.data import Subset, random_split
-import torch.nn as nn
+from torch.utils.data import random_split
 import torchvision
 import torchvision.transforms as T
-from torch.utils.data import Dataset, DataLoader
-
-
+from torch.utils.data import DataLoader
 
 from src.core import Client, Server, MPIConnection
 from src.models.cifar import mobilenet
