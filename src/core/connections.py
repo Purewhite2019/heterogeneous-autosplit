@@ -1,5 +1,14 @@
 from typing import List, Tuple, Any, Callable, Dict, Union
 from mpi4py import MPI
+import socket
+import select
+import sys
+import queue
+
+import pickle
+import logging
+import re
+
 
 class Connection():
     """Abstract class defining the connection between 2 endpoints.
@@ -68,3 +77,119 @@ class MPIConnection(Connection):
             return MPI.COMM_WORLD.recv(**kwargs)
         else:
             return MPI.COMM_WORLD.recv(**kwargs)
+
+
+
+class TCPConnection(Connection):
+    """Implementation of Connection using TCP
+    """
+    N_SERVER_LISTEN = 128
+    BUFFER_SIZE = 4096
+    
+    def __init__(self, is_server:bool=False, server_ip:str=None, server_port:Union[str, int]=None) -> None:
+        """Initialize a TCP Connection
+
+        Args:
+            is_server (bool, optional): If this connection is used as a server. Defaults to False.
+            server_ip (str, optional): The IP of the server to connect for a client connection.. Defaults to None.
+            server_port (Union[str, int], optional): The port of the server. Defaults to None.
+        
+        Example:
+        ```
+            server = TCPConnection(is_server=True, server_port=10001)
+            client = TCPConnection(is_server=False, server_ip='127.0.0.1', server_port=10001)
+        ```
+        """
+        super().__init__()
+        self.connection = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.is_server = is_server
+        
+        if is_server is True:
+            address = ('', str(server_port))
+            self.connection.bind(address)
+            self.connection.listen(TCPConnection.N_SERVER_LISTEN)
+            self.clients = {}
+            
+        else:
+            self.connection.connect((server_ip, server_port))
+    
+    def try_accept(self) -> None:
+        if not self.is_server:
+            raise RuntimeError('Client connection shouldn`t call this function.')
+        try:
+            while True:
+                self.connection.setblocking(False)
+                socket, addr = self.connection.accept()    # If no client is connection, an exception will be raised.
+                self.connection.setblocking(True)
+                data = socket.recv(TCPConnection.BUFFER_SIZE)
+                self.connection.setblocking(False)
+                while True:
+                    try:
+                        data += socket.recv(TCPConnection.BUFFER_SIZE)
+                    except:
+                        pass
+                    finally:
+                        (msg, kwmsg) = pickle.loads(data)
+                        assert len(msg) == 1 and re.match(r'Client\d+Ready', msg[0]) and kwmsg is None
+                        client_idx = int(re.sub('Ready', "", re.sub('Client', "", msg[0])))
+                        assert client_idx not in self.clients.keys()
+                        self.clients[client_idx] = (socket, addr)
+        except:
+            pass
+    
+    def send(self, dest, non_blocking=False, *msg, **kwmsg) -> None:
+        if self.is_server:
+            self.try_accept()
+        
+        self.connection.setblocking(not non_blocking)
+        if self.is_server:
+            self.clients[dest][0].send(pickle.dumps((msg, kwmsg)))
+        else:
+            self.connection.send(pickle.dumps((msg, kwmsg)))
+
+    def recv(self, non_blocking=False, **kwargs) -> List[Tuple[Tuple, Dict]]:
+        if self.is_server:
+            self.try_accept()
+
+        ret = []
+        self.connection.setblocking(False)
+        # Server
+        if self.is_server:
+            while len(ret) == 0:
+                for socket, _ in self.clients.values():
+                    try:
+                        # Get the header part of data
+                        data = socket.recv(TCPConnection.BUFFER_SIZE)
+                        # Get the remaining parts of data
+                        while True:
+                            try:
+                                data += socket.recv(TCPConnection.BUFFER_SIZE)
+                            except:
+                                pass
+                            finally:
+                                (msg, kwmsg) = pickle.loads(data)
+                                ret.append((msg, kwmsg))
+                    except:
+                        pass
+                if non_blocking:
+                    break
+        # Client
+        else:
+            while len(ret) == 0:
+                try:
+                    # Get the header part of data
+                    data = self.connection.recv(TCPConnection.BUFFER_SIZE)
+                    # Get the remaining parts of data
+                    while True:
+                        try:
+                            data += self.connection.recv(TCPConnection.BUFFER_SIZE)
+                        except:
+                            pass
+                        finally:
+                            (msg, kwmsg) = pickle.loads(data)
+                            ret.append((msg, kwmsg))
+                except:
+                    pass
+                if non_blocking:
+                    break
+        return ret

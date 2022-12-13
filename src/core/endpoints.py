@@ -1,12 +1,15 @@
 from src.core.trainer import DynamicNetwork, DynamicNetworkTrainer
 from src.core.connections import Connection
+from src.utils.utils import AverageMeter
 
+import psutil
 import os
 import time
 import re
 import logging
 from collections import deque
 from tqdm import trange
+from pprint import pformat
 
 import torch
 import torch.nn as nn
@@ -40,6 +43,7 @@ class Client(DynamicNetworkTrainer):
         self.server_connection = server_connection
         
         os.makedirs(self.dump_path, exist_ok=True)
+        self.server_connection.send(0, False, f'Client{self.number}Ready')  # This message helps TCPConnection to match client sockets with their client IDs. 
 
         # logging settings
         logger = logging.getLogger()
@@ -60,7 +64,10 @@ class Client(DynamicNetworkTrainer):
 
         self.model.to(self.device)
         self.model.train()
-    
+        
+        self.network_meter = AverageMeter()
+        self.summary_server = None
+
     def left_shift_split_point(self):
         logging.info('Left-shifting split point...')
         self.pop_back_layer()
@@ -79,30 +86,46 @@ class Client(DynamicNetworkTrainer):
         self.push_back_layer(layer, optim_state_diff)
         logging.info('Right-shift finished')
 
+    def summarize(self, idx_start: int = 0) -> Dict:
+        summary = dict()
+        for i in range(idx_start, len(self.model.model_layers)):
+            summary[f'client{self.number}-forward-{i}'] = self.model.forward_meters[i].avg
+            summary[f'client{self.number}-backward-{i}'] = self.model.backward_meters[i].avg
+        summary['network'] = self.network_meter.avg
+        summary.update(self.server_summary)
+        return summary
+
+    def merge_server_summary(self, summary_server: dict) -> None:
+        self.summary_server = summary_server
+
     def train(self, n_epoch: int=1) -> None:
         for e in trange(n_epoch):
             for X, y in self.dataloader:
                 X, y = X.to(self.device), y.to(self.device)
-                infer_stime = time.time()
                 feat_client = self.forward(X)
-                infer_mtime = time.time()
 
+                begin = time.time()
                 logging.debug(f'Sending forward information to server: {len(self.model.model_layers)}, {feat_client.shape}, {y.shape}')
                 self.server_connection.send(0, False, f'Client{self.number}Forward', len(self.model.model_layers), feat_client, y)
-                infer_etime = time.time()
 
                 msgs = self.server_connection.recv(False, source=0)
-                assert len(msgs) == 1 and msgs[0][1] == {}
-                msg_type, feat_grad = msgs[0][0]
+                assert len(msgs) == 2 and msgs[0][1] == {}
+                msg_type, feat_grad, summary_server = msgs[0][0]
                 assert msg_type == f'ServerBackwardToClient{self.number}' and isinstance(feat_grad, torch.Tensor)
                 feat_grad = feat_grad.to(self.device)
                 logging.debug(f'Received backward information from server: {msg_type}, {feat_grad.shape}')
 
+                end = time.time()
+                self.network_meter.update(end - begin - sum(summary_server.values()))   # Server total time - server train/inference time
+                
                 self.zero_grad()
                 self.backward(feat_grad)
                 self.step()
-                train_etime = time.time()
-                logging.info(f'For a batch size of {X.shape[0]}, it cost {infer_mtime - infer_stime} second to forward in local, {infer_etime - infer_mtime} second to transfer, forward and backward in cloud, {train_etime - infer_etime} second to backward in local')
+                
+                self.merge_server_summary(summary_server)
+                summary = self.summarize()
+                summary_string = pformat(summary)
+                logging.info(f'For a batch size of {X.shape[0]}, Timing summary: {summary_string}')
     
     def wait_for_sync(self) -> None:
         logging.info('Synchronizing with the server...')
@@ -154,6 +177,9 @@ class Server(DynamicNetworkTrainer):
         self.client_num = client_num
         self.wait_for_sync = [None] * client_num
         
+        self.forward_meters = dict()
+        self.backward_meters = dict()
+        
         os.makedirs(self.dump_path, exist_ok=True)
         
         # logging settings
@@ -174,7 +200,14 @@ class Server(DynamicNetworkTrainer):
 
         self.model.to(self.device)
         self.model.train()
-        
+
+    def summarize(self, idx_start: int=0) -> Dict:
+        summary = dict()
+        for i in range(idx_start, len(self.model.model_layers)):
+            summary[f'server-forward-{i}'] = self.model.forward_meters[i].avg
+            summary[f'server-backward-{i}'] = self.model.backward_meters[i].avg
+        return summary
+
     def listen(self):
         while (True):
             msgs = self.client_connection.recv()
@@ -185,7 +218,15 @@ class Server(DynamicNetworkTrainer):
                     client_idx = int(re.sub('Forward', "", re.sub('Client', "", msg[0])))
 
                     logging.debug(f'Received forward information from client {client_idx}: {layer_idx}, {feat_client.shape}, {y.shape}')
-
+                    
+                    # Measure training/inference time w.r.t. batch
+                    if feat_client.shape[0] not in self.forward_meters.keys():
+                        self.forward_meters[feat_client.shape[0]] = [AverageMeter() for _ in range(len(self.model.model_layers))]
+                        self.backward_meters[feat_client.shape[0]] = [AverageMeter() for _ in range(len(self.model.model_layers))]
+                    self.model.forward_meters = self.forward_meters[feat_client.shape[0]]
+                    self.model.backward_meters = self.backward_meters[feat_client.shape[0]]
+                    
+                    # Load features and labels to device
                     feat_client, y = feat_client.to(self.device), y.to(self.device)
                     feat_client.requires_grad_(True)
                     # Server doesn't need self.forward(), self.model.forward() is OK, because it doesn't need to store any extra information..
@@ -201,7 +242,7 @@ class Server(DynamicNetworkTrainer):
                     logging.info(f'Accuracy of batch from client {client_idx}: {corrects/n_samples:.2f}({corrects}/{n_samples})')
 
                     logging.debug(f'Sending backward information to client {client_idx}: {feat_client.shape}')
-                    self.client_connection.send(client_idx, False, f'ServerBackwardToClient{client_idx}', feat_client.grad.detach())
+                    self.client_connection.send(client_idx, False, f'ServerBackwardToClient{client_idx}', feat_client.grad.detach(), self.summarize(layer_idx))
                     logging.debug(f'Backward information are successfully sent to client {client_idx}')
 
                 elif re.match(r'Client\d+RequestParameters', msg[0]):
@@ -219,6 +260,7 @@ class Server(DynamicNetworkTrainer):
                     if self.wait_for_sync[client_idx - 1] is not None:
                         raise RuntimeError(f'Client {client_idx} is already waiting for sync but sync signal was received again.')
                     self.wait_for_sync[client_idx - 1] = client_idx, model_state, optim_state
+                
                 elif re.match(r'Client\d+TestForward', msg[0]):
                     layer_idx, feat_client, y = msg[1:]
                     client_idx = int(re.sub('TestForward', "", re.sub('Client', "", msg[0])))
@@ -239,6 +281,10 @@ class Server(DynamicNetworkTrainer):
                     self.client_connection.send(client_idx, False, f'ServerToClient{client_idx}')
                     logging.debug(f'Acknowledge information are successfully sent to client {client_idx}')
 
+                elif re.match(r'Client\d+Ready', msg):
+                    client_idx = int(re.sub('Ready', "", re.sub('Client', "", msg)))
+                    logging.info(f'Client {client_idx} is ready for training.')
+                
                 else:
                     raise ValueError(f'Unknown message type "{msg[0]}".')
             
@@ -285,10 +331,3 @@ class Server(DynamicNetworkTrainer):
                     for i, (client_idx, model_state, optim_state) in enumerate(self.wait_for_sync):
                         self.client_connection.send(client_idx, False, f'ServerSyncWithClient{client_idx}', model_state, optim_state)
                     self.wait_for_sync = [None] * self.client_num
-
-
-
-    def save_model(self, name=None):
-        path = os.path.join(self.dump_path, 'model_checkpoint.pth' if name is None else name)
-        torch.save(self.model, path)
-        logging.info(f'Model saved in {path}')

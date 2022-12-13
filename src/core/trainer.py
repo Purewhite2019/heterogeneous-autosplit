@@ -1,8 +1,13 @@
+from src.utils.utils import AverageMeter
+
+import os
+import logging
+from typing import List, Tuple, Any, Dict
+from time import time
+
 import torch
 import torch.nn as nn
 import torch.optim as optim
-
-from typing import List, Tuple, Any
 
 
 class DynamicNetwork(nn.Module):
@@ -14,17 +19,26 @@ class DynamicNetwork(nn.Module):
     def __init__(self, model_layers: List[nn.Module]) -> None:
         super().__init__()
         self.model_layers = nn.ModuleList(model_layers)
+        self.forward_meters = [AverageMeter() for _ in range(len(self.model_layers))]
+        self.backward_meters = [AverageMeter() for _ in range(len(self.model_layers))]
     
     def forward(self, x: torch.Tensor, idx_start: int=0) -> torch.Tensor:
-        for layer in self.model_layers[idx_start:]:
+        for i, layer in enumerate(self.model_layers[idx_start:]):
+            begin = time()
             x = layer(x)
+            end = time()
+            self.forward_meters[idx_start+i].update(end - begin)
         return x
 
     def push_front_layer(self, layer: nn.Module) -> None:
         self.model_layers.append(layer)
+        self.forward_meters.append(AverageMeter())
+        self.backward_meters.append(AverageMeter())
 
     def push_back_layer(self, layer: nn.Module) -> None:
         self.model_layers.insert(0, layer)
+        self.forward_meters.insert(0, AverageMeter())
+        self.backward_meters.insert(0, AverageMeter())
 
     #! Caution: the return values shouldn't be modified otherwise the running model parameters will be modified as well.
     def dump_layer(self, idx: int) -> nn.Module:
@@ -34,11 +48,15 @@ class DynamicNetwork(nn.Module):
     def pop_front_layer(self) -> nn.Module:
         layer = self.model_layers[0]
         self.model_layers.pop(0)
+        self.forward_meters.pop(0)
+        self.backward_meters.pop(0)
         return layer
 
     def pop_back_layer(self) -> nn.Module:
         layer = self.model_layers[-1]
         self.model_layers.pop(-1)
+        self.forward_meters.pop(-1)
+        self.backward_meters.pop(-1)
         return layer
 
 
@@ -91,6 +109,13 @@ class DynamicNetworkTrainer():
             raise NotImplementedError(f'Optimizer "{optim_alg}" is not supported.')
         
         self.last_forward_output = None
+    
+    def summarize(self, idx_start: int=0) -> Dict:
+        summary = dict()
+        for i in range(idx_start, len(self.model.model_layers)):
+            summary[f'forward-{i}'] = self.model.forward_meters[i].avg
+            summary[f'backward-{i}'] = self.model.backward_meters[i].avg
+        return summary
     
     def forward(self, x: torch.Tensor, idx_start: int=0) -> torch.Tensor:
         self.last_forward_output = self.model(x, idx_start)
@@ -205,3 +230,8 @@ class DynamicNetworkTrainer():
         self.optim.load_state_dict(optim_state)
         
         return layer, optim_state_diff
+
+    def save_model(self, name=None):
+        path = os.path.join(self.dump_path, 'model_checkpoint.pth' if name is None else name)
+        torch.save(self.model, path)
+        logging.info(f'Model saved in {path}')
