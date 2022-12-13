@@ -1,6 +1,6 @@
 import os
 import sys
-sys.path.append('./')
+sys.path.append('../')
 
 from src.core import Client, Server, MPIConnection
 from src.models.cifar import mobilenet
