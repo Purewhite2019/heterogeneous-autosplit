@@ -2,7 +2,6 @@ from src.core.trainer import DynamicNetwork, DynamicNetworkTrainer
 from src.core.connections import Connection
 from src.utils.utils import AverageMeter
 
-import psutil
 import os
 import time
 import re
@@ -17,11 +16,10 @@ import torchvision
 from torch.utils.data import Dataset, DataLoader
 import torch.nn.functional as F
 
-from mpi4py import MPI
 from typing import List, Tuple, Any, Callable, Dict, Union
 
 
-LOG_LEVEL = logging.INFO
+LOG_LEVEL = logging.DEBUG
 BASIC_FORMAT_CLIENT = '%(asctime)s - %(filename)s[line:%(lineno)d] - [Client (CLIENTNO)] %(levelname)s: %(message)s'
 BASIC_FORMAT_SERVER = f'%(asctime)s - %(filename)s[line:%(lineno)d] - [Server] %(levelname)s: %(message)s'
 DATE_FORMAT = '%Y-%m-%d %H:%M:%S'

@@ -1,12 +1,7 @@
 from typing import List, Tuple, Any, Callable, Dict, Union
-from mpi4py import MPI
 import socket
-import select
-import sys
-import queue
 
 import pickle
-import logging
 import re
 
 
@@ -44,6 +39,7 @@ class Connection():
         raise NotImplementedError()
 
 
+from mpi4py import MPI
 class MPIConnection(Connection):
     """Implementation of Connection using MPI
     """
@@ -105,7 +101,7 @@ class TCPConnection(Connection): #59.78.9.42: 50000
         self.is_server = is_server
         
         if is_server is True:
-            address = ('', str(server_port))
+            address = ('', int(server_port))
             self.connection.bind(address)
             self.connection.listen(TCPConnection.N_SERVER_LISTEN)
             self.clients = {}
@@ -120,20 +116,20 @@ class TCPConnection(Connection): #59.78.9.42: 50000
             while True:
                 self.connection.setblocking(False)
                 socket, addr = self.connection.accept()    # If no client is connection, an exception will be raised.
+                print('Connect establish')
                 self.connection.setblocking(True)
                 data = socket.recv(TCPConnection.BUFFER_SIZE)
                 self.connection.setblocking(False)
-                while True:
-                    try:
+                try:
+                    while True:
                         data += socket.recv(TCPConnection.BUFFER_SIZE)
-                    except:
-                        pass
-                    finally:
-                        (msg, kwmsg) = pickle.loads(data)
-                        assert len(msg) == 1 and re.match(r'Client\d+Ready', msg[0]) and kwmsg is None
-                        client_idx = int(re.sub('Ready', "", re.sub('Client', "", msg[0])))
-                        assert client_idx not in self.clients.keys()
-                        self.clients[client_idx] = (socket, addr)
+                except:
+                    (msg, kwmsg) = pickle.loads(data)
+                    assert len(msg) == 1 and re.match(r'Client\d+Ready', msg[0]) and kwmsg == {}
+                    client_idx = int(re.sub('Ready', "", re.sub('Client', "", msg[0])))
+                    print(f'The client {client_idx} of ({socket}, {addr}) is added into client list')
+                    assert client_idx not in self.clients.keys()
+                    self.clients[client_idx] = (socket, addr)
         except:
             pass
     
@@ -148,9 +144,12 @@ class TCPConnection(Connection): #59.78.9.42: 50000
             self.connection.send(pickle.dumps((msg, kwmsg)))
 
     def recv(self, non_blocking=False, **kwargs) -> List[Tuple[Tuple, Dict]]:
+        print('Try to connect')
         if self.is_server:
             self.try_accept()
-
+            while len(self.clients.keys()) == 0:
+                self.try_accept()
+        print('Wait for recv')
         ret = []
         self.connection.setblocking(False)
         # Server
@@ -161,33 +160,31 @@ class TCPConnection(Connection): #59.78.9.42: 50000
                         # Get the header part of data
                         data = socket.recv(TCPConnection.BUFFER_SIZE)
                         # Get the remaining parts of data
-                        while True:
-                            try:
+                        try:
+                            while True:
                                 data += socket.recv(TCPConnection.BUFFER_SIZE)
-                            except:
-                                pass
-                            finally:
-                                (msg, kwmsg) = pickle.loads(data)
-                                ret.append((msg, kwmsg))
+                                print(data)
+                        except:
+                            (msg, kwmsg) = pickle.loads(data)
+                            ret.append((msg, kwmsg))
                     except:
                         pass
                 if non_blocking:
                     break
         # Client
         else:
+            self.connection.setblocking(False)
             while len(ret) == 0:
                 try:
                     # Get the header part of data
                     data = self.connection.recv(TCPConnection.BUFFER_SIZE)
                     # Get the remaining parts of data
-                    while True:
-                        try:
+                    try:
+                        while True:
                             data += self.connection.recv(TCPConnection.BUFFER_SIZE)
-                        except:
-                            pass
-                        finally:
-                            (msg, kwmsg) = pickle.loads(data)
-                            ret.append((msg, kwmsg))
+                    except:
+                        (msg, kwmsg) = pickle.loads(data)
+                        ret.append((msg, kwmsg))
                 except:
                     pass
                 if non_blocking:
