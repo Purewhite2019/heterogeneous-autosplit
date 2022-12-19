@@ -167,11 +167,11 @@ class TCPConnection(Connection): #59.78.9.42: 50000
                         #try:
                         while len(data_new) >= 1400:
                             data += data_new
-                            print(len(data_new), len(data))
+                            #print(len(data_new), len(data))
                             data_new = socket.recv(TCPConnection.BUFFER_SIZE)
                         #except:
                         data += data_new
-                        print(sys.getsizeof(data))
+                        #print(sys.getsizeof(data))
                         (msg, kwmsg) = pickle.loads(data)
                         ret.append((msg, kwmsg))
                         socket.setblocking(False)

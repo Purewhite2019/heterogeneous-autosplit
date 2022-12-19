@@ -90,7 +90,7 @@ class Client(DynamicNetworkTrainer):
             summary[f'client{self.number}-forward-{i}'] = self.model.forward_meters[i].avg
             summary[f'client{self.number}-backward-{i}'] = self.model.backward_meters[i].avg
         summary['network'] = self.network_meter.avg
-        summary.update(self.server_summary)
+        summary.update(self.summary_server)
         return summary
 
     def merge_server_summary(self, summary_server: dict) -> None:
@@ -107,7 +107,7 @@ class Client(DynamicNetworkTrainer):
                 self.server_connection.send(0, False, f'Client{self.number}Forward', len(self.model.model_layers), feat_client, y)
 
                 msgs = self.server_connection.recv(False, source=0)
-                assert len(msgs) == 2 and msgs[0][1] == {}
+                assert len(msgs) == 1 and msgs[0][1] == {}
                 msg_type, feat_grad, summary_server = msgs[0][0]
                 assert msg_type == f'ServerBackwardToClient{self.number}' and isinstance(feat_grad, torch.Tensor)
                 feat_grad = feat_grad.to(self.device)
@@ -240,7 +240,7 @@ class Server(DynamicNetworkTrainer):
                     logging.info(f'Accuracy of batch from client {client_idx}: {corrects/n_samples:.2f}({corrects}/{n_samples})')
 
                     logging.debug(f'Sending backward information to client {client_idx}: {feat_client.shape}')
-                    self.client_connection.send(client_idx, False, f'ServerBackwardToClient{client_idx}', feat_client.grad.detach(), self.summarize(layer_idx))
+                    self.client_connection.send(client_idx, False, f'ServerBackwardToClient{client_idx}', feat_client.grad.detach().cpu(), self.summarize(layer_idx))
                     logging.debug(f'Backward information are successfully sent to client {client_idx}')
 
                 elif re.match(r'Client\d+RequestParameters', msg[0]):
