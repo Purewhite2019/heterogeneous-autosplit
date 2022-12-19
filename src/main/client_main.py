@@ -7,6 +7,8 @@ import torchvision
 import torchvision.transforms as T
 from torch.utils.data import DataLoader
 
+from src.utils.data_process import get_rotated_dataset, get_dataset_with_skewed_label
+
 from src.core import Client, TCPConnection
 from src.models.cifar import mobilenet
 
@@ -16,14 +18,9 @@ client_layer_num = 3
 
 if __name__ == '__main__':
     feat_extractor, classifier = mobilenet(class_num=10).dump_layers()
-    whole_train_dataset = torchvision.datasets.CIFAR10(root='../data/cifar10/', train=True, download=True,
-                                                       transform=T.Compose(
-                                                           [T.RandomVerticalFlip(), T.RandomResizedCrop(32),
-                                                            T.ToTensor(),
-                                                            T.Normalize(mean=(0.4914, 0.4822, 0.4465),
-                                                                        std=(0.247, 0.243, 0.261))]))
-    client_datasets = random_split(whole_train_dataset, [len(whole_train_dataset) // 2,
-                                                         len(whole_train_dataset) - len(whole_train_dataset) // 2])
+    
+    client_datasets = get_rotated_dataset(dataset = 'cifar10', n_clients = 2, angles = [0, 180], istrain=True)
+    # client_datasets = get_dataset_with_skewed_label(labels_per_client = 4, dataset = 'cifar10', n_clients = 2, istrain=True)
 
     def dataloader_fn(idx: int) -> DataLoader:
         return DataLoader(client_datasets[idx - 1], batch_size=32, shuffle=True, pin_memory=True)
