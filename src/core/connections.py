@@ -81,7 +81,7 @@ class TCPConnection(Connection): #59.78.9.42: 50000
     """Implementation of Connection using TCP
     """
     N_SERVER_LISTEN = 128
-    BUFFER_SIZE = 2800
+    BUFFER_SIZE = 1400
     
     def __init__(self, is_server:bool=False, server_ip:str=None, server_port:Union[str, int]=None) -> None:
         """Initialize a TCP Connection
@@ -190,7 +190,7 @@ class TCPConnection(Connection): #59.78.9.42: 50000
                     self.connection.setblocking(True)
                     # Get the remaining parts of data
                     # try:
-                    while len(data_new) % 1400 == 0:
+                    while len(data_new) >= 1400:
                         data += data_new
                         # print(len(data_new), len(data))
                         data_new = self.connection.recv(TCPConnection.BUFFER_SIZE)
