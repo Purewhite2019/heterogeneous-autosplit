@@ -1,5 +1,6 @@
 from typing import List, Tuple, Any, Callable, Dict, Union
 import socket
+from copy import deepcopy
 
 import pickle
 import re
@@ -117,9 +118,9 @@ class TCPConnection(Connection): #59.78.9.42: 50000
                 self.connection.setblocking(False)
                 socket, addr = self.connection.accept()    # If no client is connection, an exception will be raised.
                 print('Connect establish')
-                self.connection.setblocking(True)
-                data = socket.recv(TCPConnection.BUFFER_SIZE)
-                self.connection.setblocking(False)
+                socket.setblocking(True)
+                data = deepcopy(socket.recv(TCPConnection.BUFFER_SIZE))
+                socket.setblocking(False)
                 try:
                     while True:
                         data += socket.recv(TCPConnection.BUFFER_SIZE)
@@ -158,17 +159,16 @@ class TCPConnection(Connection): #59.78.9.42: 50000
                 for socket, _ in self.clients.values():
                     try:
                         # Get the header part of data
-                        data = socket.recv(TCPConnection.BUFFER_SIZE)
+                        data = deepcopy(socket.recv(TCPConnection.BUFFER_SIZE))
                         # Get the remaining parts of data
                         try:
                             while True:
-                                data += socket.recv(TCPConnection.BUFFER_SIZE)
-                                print(data)
+                                data += deepcopy(socket.recv(TCPConnection.BUFFER_SIZE))
                         except:
                             (msg, kwmsg) = pickle.loads(data)
                             ret.append((msg, kwmsg))
                     except:
-                        pass
+                        continue
                 if non_blocking:
                     break
         # Client
@@ -177,11 +177,11 @@ class TCPConnection(Connection): #59.78.9.42: 50000
             while len(ret) == 0:
                 try:
                     # Get the header part of data
-                    data = self.connection.recv(TCPConnection.BUFFER_SIZE)
+                    data = deepcopy(self.connection.recv(TCPConnection.BUFFER_SIZE))
                     # Get the remaining parts of data
                     try:
                         while True:
-                            data += self.connection.recv(TCPConnection.BUFFER_SIZE)
+                            data += deepcopy(self.connection.recv(TCPConnection.BUFFER_SIZE))
                     except:
                         (msg, kwmsg) = pickle.loads(data)
                         ret.append((msg, kwmsg))
