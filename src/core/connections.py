@@ -1,6 +1,6 @@
+import sys
 from typing import List, Tuple, Any, Callable, Dict, Union
 import socket
-from copy import deepcopy
 
 import pickle
 import re
@@ -81,7 +81,7 @@ class TCPConnection(Connection): #59.78.9.42: 50000
     """Implementation of Connection using TCP
     """
     N_SERVER_LISTEN = 128
-    BUFFER_SIZE = 4096
+    BUFFER_SIZE = 2800
     
     def __init__(self, is_server:bool=False, server_ip:str=None, server_port:Union[str, int]=None) -> None:
         """Initialize a TCP Connection
@@ -119,7 +119,7 @@ class TCPConnection(Connection): #59.78.9.42: 50000
                 socket, addr = self.connection.accept()    # If no client is connection, an exception will be raised.
                 print('Connect establish')
                 socket.setblocking(True)
-                data = deepcopy(socket.recv(TCPConnection.BUFFER_SIZE))
+                data = socket.recv(TCPConnection.BUFFER_SIZE)
                 socket.setblocking(False)
                 try:
                     while True:
@@ -137,12 +137,13 @@ class TCPConnection(Connection): #59.78.9.42: 50000
     def send(self, dest, non_blocking=False, *msg, **kwmsg) -> None:
         if self.is_server:
             self.try_accept()
-        
-        self.connection.setblocking(not non_blocking)
-        if self.is_server:
+            self.clients[dest][0].setblocking(not non_blocking)
+            t = pickle.dumps((msg, kwmsg))
+            print(sys.getsizeof(t))
             self.clients[dest][0].send(pickle.dumps((msg, kwmsg)))
         else:
-            self.connection.send(pickle.dumps((msg, kwmsg)))
+            self.connection.setblocking(not non_blocking)
+            self.connection.sendall(pickle.dumps((msg, kwmsg)))
 
     def recv(self, non_blocking=False, **kwargs) -> List[Tuple[Tuple, Dict]]:
         print('Try to connect')
@@ -159,15 +160,23 @@ class TCPConnection(Connection): #59.78.9.42: 50000
                 for socket, _ in self.clients.values():
                     try:
                         # Get the header part of data
-                        data = deepcopy(socket.recv(TCPConnection.BUFFER_SIZE))
+                        data = b''
+                        data_new = socket.recv(TCPConnection.BUFFER_SIZE)
+                        socket.setblocking(True)
                         # Get the remaining parts of data
-                        try:
-                            while True:
-                                data += deepcopy(socket.recv(TCPConnection.BUFFER_SIZE))
-                        except:
-                            (msg, kwmsg) = pickle.loads(data)
-                            ret.append((msg, kwmsg))
-                    except:
+                        #try:
+                        while len(data_new) >= 1400:
+                            data += data_new
+                            print(len(data_new), len(data))
+                            data_new = socket.recv(TCPConnection.BUFFER_SIZE)
+                        #except:
+                        data += data_new
+                        print(sys.getsizeof(data))
+                        (msg, kwmsg) = pickle.loads(data)
+                        ret.append((msg, kwmsg))
+                        socket.setblocking(False)
+                    except BlockingIOError:
+                        socket.setblocking(False)
                         continue
                 if non_blocking:
                     break
@@ -176,17 +185,24 @@ class TCPConnection(Connection): #59.78.9.42: 50000
             self.connection.setblocking(False)
             while len(ret) == 0:
                 try:
-                    # Get the header part of data
-                    data = deepcopy(self.connection.recv(TCPConnection.BUFFER_SIZE))
+                    data = b''
+                    data_new = self.connection.recv(TCPConnection.BUFFER_SIZE)
+                    self.connection.setblocking(True)
                     # Get the remaining parts of data
-                    try:
-                        while True:
-                            data += deepcopy(self.connection.recv(TCPConnection.BUFFER_SIZE))
-                    except:
-                        (msg, kwmsg) = pickle.loads(data)
-                        ret.append((msg, kwmsg))
-                except:
-                    pass
+                    # try:
+                    while len(data_new) % 1400 == 0:
+                        data += data_new
+                        # print(len(data_new), len(data))
+                        data_new = self.connection.recv(TCPConnection.BUFFER_SIZE)
+                    # except:
+                    data += data_new
+                    # print(sys.getsizeof(data))
+                    (msg, kwmsg) = pickle.loads(data)
+                    ret.append((msg, kwmsg))
+                    self.connection.setblocking(False)
+                except BlockingIOError:
+                    self.connection.setblocking(False)
+                    continue
                 if non_blocking:
                     break
         return ret
