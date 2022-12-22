@@ -39,7 +39,9 @@ class Client(DynamicNetworkTrainer):
         self.dump_path = dump_path
         self.dataloader = dataloader_fn(self.number)
         self.server_connection = server_connection
-        
+
+        self.unchange_times = 0
+
         os.makedirs(self.dump_path, exist_ok=True)
         self.server_connection.send(0, False, f'Client{self.number}Ready')  # This message helps TCPConnection to match client sockets with their client IDs. 
 
@@ -76,13 +78,39 @@ class Client(DynamicNetworkTrainer):
         
         self.server_connection.send(0, f'Client{self.number}RequestParameters', len(self.model.model_layers))
         msgs = self.server_connection.recv(False, 0)
-        assert len(msgs) == 1 and len(msgs[0][1]) == None
+        assert len(msgs) == 1 and msgs[0][1] == {}
         msg_type, layer, optim_state_diff = msgs[0][0]
         assert msg_type == f'ServerReplyParametersToClient{self.number}' and isinstance(layer, nn.Module)
         logging.debug(f'Received layer from server: {msg_type}, {type(layer)}, {type(optim_state_diff)}')
 
         self.push_back_layer(layer, optim_state_diff)
         logging.info('Right-shift finished')
+
+    def adjust_split_point(self):
+        left_shift = False
+        num_layers = len(self.model.model_layers)
+        if num_layers >= 2:
+            cur_output_size = self.model.output_size[-1]
+            pre_output_size = self.model.output_size[-2]
+            cur_size = 1
+            pre_size = 1
+            for dim in cur_output_size[1:]:
+                cur_size *= dim
+            for dim in pre_output_size[1:]:
+                pre_size *= dim
+            cur_netlag = self.network_meter.avg
+            pre_est_netlag = cur_netlag * pre_size / cur_size
+            local_lag = self.model.forward_meters[num_layers].avg + self.model.backward_meters[num_layers].avg
+            if local_lag + cur_netlag > 1.05 * pre_est_netlag:
+                left_shift = True
+        if left_shift:
+            self.left_shift_split_point()
+            self.unchange_times = 0
+        elif self.unchange_times >= 10:
+            self.right_shift_split_point()
+            self.unchange_times = 0
+        else:
+            self.unchange_times += 1
 
     def summarize(self, idx_start: int = 0) -> Dict:
         summary = dict()
@@ -98,7 +126,7 @@ class Client(DynamicNetworkTrainer):
 
     def train(self, n_epoch: int=1) -> None:
         for e in trange(n_epoch):
-            for X, y in self.dataloader:
+            for i, (X, y) in enumerate(self.dataloader):
                 X, y = X.to(self.device), y.to(self.device)
                 feat_client = self.forward(X)
 
@@ -123,6 +151,8 @@ class Client(DynamicNetworkTrainer):
                 self.merge_server_summary(summary_server)
                 summary = self.summarize()
                 summary_string = pformat(summary)
+                if (i + 1) % 20 == 0:
+                    self.adjust_split_point()
                 logging.info(f'For a batch size of {X.shape[0]}, Timing summary: {summary_string}')
     
     def wait_for_sync(self) -> None:

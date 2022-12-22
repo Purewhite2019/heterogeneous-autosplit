@@ -19,6 +19,7 @@ class DynamicNetwork(nn.Module):
     def __init__(self, model_layers: List[nn.Module]) -> None:
         super().__init__()
         self.model_layers = nn.ModuleList(model_layers)
+        self.output_size = [None for _ in range(len(self.model_layers))]
         self.forward_meters = [AverageMeter() for _ in range(len(self.model_layers))]
         self.backward_meters = [AverageMeter() for _ in range(len(self.model_layers))]
     
@@ -27,16 +28,19 @@ class DynamicNetwork(nn.Module):
             begin = time()
             x = layer(x)
             end = time()
+            self.output_size[idx_start + i] = x.shape
             self.forward_meters[idx_start+i].update(end - begin)
         return x
 
     def push_front_layer(self, layer: nn.Module) -> None:
         self.model_layers.append(layer)
+        self.output_size.append(None)
         self.forward_meters.append(AverageMeter())
         self.backward_meters.append(AverageMeter())
 
     def push_back_layer(self, layer: nn.Module) -> None:
         self.model_layers.insert(0, layer)
+        self.output_size.insert(0, None)
         self.forward_meters.insert(0, AverageMeter())
         self.backward_meters.insert(0, AverageMeter())
 
@@ -48,6 +52,7 @@ class DynamicNetwork(nn.Module):
     def pop_front_layer(self) -> nn.Module:
         layer = self.model_layers[0]
         self.model_layers.pop(0)
+        self.output_size.pop(0)
         self.forward_meters.pop(0)
         self.backward_meters.pop(0)
         return layer
@@ -55,6 +60,7 @@ class DynamicNetwork(nn.Module):
     def pop_back_layer(self) -> nn.Module:
         layer = self.model_layers[-1]
         self.model_layers.pop(-1)
+        self.output_size.pop(-1)
         self.forward_meters.pop(-1)
         self.backward_meters.pop(-1)
         return layer
