@@ -5,20 +5,23 @@ from typing import Any
 class AverageMeter(object):
     """computes and stores the average and current value"""
 
-    def __init__(self):
+    def __init__(self, gamma: float=0.9):
         self.reset()
+        self.gamma = gamma
 
     def reset(self):
         self.val = 0
         self.avg = 0
         self.sum = 0
         self.count = 0
+        self.exp_avg = None
 
     def update(self, val, n=1):
         self.val = val
         self.sum += val
         self.count += n
         self.avg = self.sum / self.count
+        self.exp_avg = val if self.exp_avg is None else (self.gamma * self.exp_avg + (1-self.exp_avg) * val)
 
 
 def accuracy(output, target, topk=(1,)):

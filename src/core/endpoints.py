@@ -67,6 +67,8 @@ class Client(DynamicNetworkTrainer):
         
         self.network_meter = AverageMeter()
         self.summary_server = None
+        
+        #TODO: 空跑
 
     def left_shift_split_point(self):
         logging.info('Left-shifting split point...')
@@ -98,9 +100,9 @@ class Client(DynamicNetworkTrainer):
                 cur_size *= dim
             for dim in pre_output_size[1:]:
                 pre_size *= dim
-            cur_netlag = self.network_meter.avg
+            cur_netlag = self.network_meter.exp_avg
             pre_est_netlag = cur_netlag * pre_size / cur_size
-            local_lag = self.model.forward_meters[num_layers].avg + self.model.backward_meters[num_layers].avg
+            local_lag = self.model.forward_meters[num_layers].exp_avg + self.model.backward_meters[num_layers].exp_avg
             if local_lag + cur_netlag > 1.05 * pre_est_netlag:
                 left_shift = True
         if left_shift:
@@ -115,9 +117,9 @@ class Client(DynamicNetworkTrainer):
     def summarize(self, idx_start: int = 0) -> Dict:
         summary = dict()
         for i in range(idx_start, len(self.model.model_layers)):
-            summary[f'client{self.number}-forward-{i}'] = self.model.forward_meters[i].avg
-            summary[f'client{self.number}-backward-{i}'] = self.model.backward_meters[i].avg
-        summary['network'] = self.network_meter.avg
+            summary[f'client{self.number}-forward-{i}'] = self.model.forward_meters[i].exp_avg
+            summary[f'client{self.number}-backward-{i}'] = self.model.backward_meters[i].exp_avg
+        summary['network'] = self.network_meter.exp_avg #! Internet time + Server time
         summary.update(self.summary_server)
         return summary
 
@@ -154,6 +156,11 @@ class Client(DynamicNetworkTrainer):
                 if (i + 1) % 20 == 0:
                     self.adjust_split_point()
                 logging.info(f'For a batch size of {X.shape[0]}, Timing summary: {summary_string}')
+        
+        #TODO: Our code should be placed here.
+        #TODO: sent a 0x0 data and measure corresponding time
+        #TODO: Predict
+        #TODO: Auto split
     
     def wait_for_sync(self) -> None:
         logging.info('Synchronizing with the server...')
@@ -232,8 +239,8 @@ class Server(DynamicNetworkTrainer):
     def summarize(self, idx_start: int=0) -> Dict:
         summary = dict()
         for i in range(idx_start, len(self.model.model_layers)):
-            summary[f'server-forward-{i}'] = self.model.forward_meters[i].avg
-            summary[f'server-backward-{i}'] = self.model.backward_meters[i].avg
+            summary[f'server-forward-{i}'] = self.model.forward_meters[i].exp_avg
+            summary[f'server-backward-{i}'] = self.model.backward_meters[i].exp_avg
         return summary
 
     def listen(self):

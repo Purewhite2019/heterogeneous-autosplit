@@ -23,6 +23,9 @@ def get_topology():
     return '{\n' + f'\t\"Topology\": {topology}' + '\n}'
 
 def recv() -> None:
+    global accs
+    global topology
+    
     while flask_pipe.poll():
         msg = flask_pipe.recv()
         print(msg)
