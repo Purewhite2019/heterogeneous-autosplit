@@ -265,11 +265,12 @@ class Server(DynamicNetworkTrainer):
                     feat_client, y = feat_client.to(self.device), y.to(self.device)
                     feat_client.requires_grad_(True)
                     # Server doesn't need self.forward(), self.model.forward() is OK, because it doesn't need to store any extra information..
-                    logits = self.model(feat_client, layer_idx)
+                    logits = self.model(feat_client, layer_idx).detach().requires_grad_(True)
                     loss = F.cross_entropy(logits, y)
 
                     self.zero_grad()
                     loss.backward()
+                    self.backward(logits.grad.detach(), layer_idx)
                     self.step()
                     
                     corrects = (torch.argmax(logits, dim=-1) == y).sum()

@@ -20,27 +20,44 @@ class DynamicNetwork(nn.Module):
         super().__init__()
         self.model_layers = nn.ModuleList(model_layers)
         self.output_size = [None for _ in range(len(self.model_layers))]
+        self.last_forward_inputs = [None for _ in range(len(self.model_layers))]
+        self.last_forward_outputs = [None for _ in range(len(self.model_layers))]
         self.forward_meters = [AverageMeter() for _ in range(len(self.model_layers))]
         self.backward_meters = [AverageMeter() for _ in range(len(self.model_layers))]
     
     def forward(self, x: torch.Tensor, idx_start: int=0) -> torch.Tensor:
         for i, layer in enumerate(self.model_layers[idx_start:]):
             begin = time()
+            self.last_forward_inputs[i] = x
             x = layer(x)
+            self.last_forward_outputs[i] = x
+            x = x.detach().requires_grad_(True)
             end = time()
             self.output_size[idx_start + i] = x.shape
             self.forward_meters[idx_start+i].update(end - begin)
         return x
+    
+    def backward(self, grad: torch.Tensor, idx_start: int=0) -> None:
+        for i, (last_forward_output, last_forward_input) in reversed(list(enumerate(zip(self.last_forward_outputs, self.last_forward_inputs)))):
+            begin = time()
+            last_forward_output.backward(grad)
+            grad = last_forward_input.grad
+            end = time()
+            self.backward_meters[idx_start+i].update(end - begin)
 
     def push_front_layer(self, layer: nn.Module) -> None:
         self.model_layers.append(layer)
         self.output_size.append(None)
+        self.last_forward_inputs.append(None)
+        self.last_forward_outputs.append(None)
         self.forward_meters.append(AverageMeter())
         self.backward_meters.append(AverageMeter())
 
     def push_back_layer(self, layer: nn.Module) -> None:
         self.model_layers.insert(0, layer)
         self.output_size.insert(0, None)
+        self.last_forward_inputs.insert(0, None)
+        self.last_forward_outputs.insert(0, None)
         self.forward_meters.insert(0, AverageMeter())
         self.backward_meters.insert(0, AverageMeter())
 
@@ -53,6 +70,8 @@ class DynamicNetwork(nn.Module):
         layer = self.model_layers[0]
         self.model_layers.pop(0)
         self.output_size.pop(0)
+        self.last_forward_inputs.pop(0)
+        self.last_forward_outputs.pop(0)
         self.forward_meters.pop(0)
         self.backward_meters.pop(0)
         return layer
@@ -61,6 +80,8 @@ class DynamicNetwork(nn.Module):
         layer = self.model_layers[-1]
         self.model_layers.pop(-1)
         self.output_size.pop(-1)
+        self.last_forward_inputs.pop(-1)
+        self.last_forward_outputs.pop(-1)
         self.forward_meters.pop(-1)
         self.backward_meters.pop(-1)
         return layer
@@ -114,8 +135,6 @@ class DynamicNetworkTrainer():
         else:
             raise NotImplementedError(f'Optimizer "{optim_alg}" is not supported.')
         
-        self.last_forward_output = None
-    
     def summarize(self, idx_start: int=0) -> Dict:
         summary = dict()
         for i in range(idx_start, len(self.model.model_layers)):
@@ -124,11 +143,10 @@ class DynamicNetworkTrainer():
         return summary
     
     def forward(self, x: torch.Tensor, idx_start: int=0) -> torch.Tensor:
-        self.last_forward_output = self.model(x, idx_start)
-        return self.last_forward_output.detach()
+        return self.model(x, idx_start).detach()
     
-    def backward(self, grad: torch.Tensor) -> None:
-        self.last_forward_output.backward(grad)
+    def backward(self, grad: torch.Tensor, idx_start: int=0) -> None:
+        self.model.backward(grad, idx_start)
     
     def zero_grad(self) -> None:
         self.optim.zero_grad(set_to_none=True)
