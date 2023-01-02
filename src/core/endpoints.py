@@ -73,12 +73,13 @@ class Client(DynamicNetworkTrainer):
         self.model.train()
         
         self.n_layer_total = len(model_layers)+1
+        logging.info(f'Preliminary initialization succeeded, using device {self.device}, begin pre-running...')
         
         # Record input shapes of each layer
         self.input_shapes = self.get_shapes(next(iter(self.dataloader))[0].shape, 0)
-        print(self.input_shapes)
+        logging.info(f'Input shapes: {self.input_shapes}')
         self.input_sizes = np.array([reduce((lambda x, y: x * y), x) for x in self.input_shapes])
-        print(self.input_sizes)
+        logging.info(f'Input sizes: {self.input_sizes}')
         
         self.network_meter = AverageMeter()
         self.network_meter_zero = AverageMeter()
@@ -96,6 +97,7 @@ class Client(DynamicNetworkTrainer):
         for i in range(len(self.model.model_layers)):
             self.model.forward_meters[i].set_record_values(True)
             self.model.backward_meters[i].set_record_values(True)
+        
         
         network_meter_first = AverageMeter()
         network_meter_last = AverageMeter()
@@ -203,16 +205,16 @@ class Client(DynamicNetworkTrainer):
         self.network_meter_zero.reset()
         logging.info('Right-shift finished')
 
-    def auto_split(self, client_forwards: np.ndarray, server_forwards: np.ndarray, client_backwards: np.ndarray, server_backwards: np.ndarray, network_sizes: np.ndarray, network_times: np.ndarray, cur_time: float) -> None:
+    def auto_split(self, client_forwards: np.ndarray, client_backwards: np.ndarray, server_forwards: np.ndarray, server_backwards: np.ndarray, network_sizes: np.ndarray, network_times: np.ndarray, cur_time: float) -> None:
         if len(client_forwards) > 0: 
             regr = LinearRegression(fit_intercept=(len(client_forwards) > 1))
-            regr.fit(self.client_forwards_base[:len(self.model.model_layers)], client_forwards)
-            client_forwards = np.concatenate([client_forwards, regr.predict(self.client_forwards_base[len(self.model.model_layers):])])
+            regr.fit(self.client_forwards_base[:len(self.model.model_layers)].reshape(-1, 1), client_forwards.reshape(-1, 1))
+            client_forwards = np.concatenate([client_forwards, regr.predict(self.client_forwards_base[len(self.model.model_layers):].reshape(-1, 1)).reshape(-1)])
             del regr
 
-            regr = LinearRegression((len(client_forwards) > 1))
-            regr.fit(self.client_backwards_base[:len(self.model.model_layers)], client_backwards)
-            client_backwards = np.concatenate([client_backwards, regr.predict(self.client_backwards_base[len(self.model.model_layers):])])
+            regr = LinearRegression(fit_intercept=(len(client_backwards) > 1))
+            regr.fit(self.client_backwards_base[:len(self.model.model_layers)].reshape(-1, 1), client_backwards.reshape(-1, 1))
+            client_backwards = np.concatenate([client_backwards, regr.predict(self.client_backwards_base[len(self.model.model_layers):].reshape(-1, 1)).reshape(-1)])
             del regr
         else:
             client_forwards = self.client_forwards_base
@@ -220,27 +222,38 @@ class Client(DynamicNetworkTrainer):
         
         if len(server_forwards) > 0: 
             regr = LinearRegression(fit_intercept=(len(server_forwards) > 1))
-            regr.fit(self.server_forwards_base[len(self.model.model_layers):], server_forwards)
-            server_forwards = np.concatenate([server_forwards, regr.predict(self.server_forwards_base[len(self.model.model_layers):])])
+            regr.fit(self.server_forwards_base[len(self.model.model_layers):].reshape(-1, 1), server_forwards.reshape(-1, 1))
+            server_forwards = np.concatenate([regr.predict(self.server_forwards_base[:len(self.model.model_layers)].reshape(-1, 1)).reshape(-1), server_forwards[:-1]])
             del regr
 
-            regr = LinearRegression(fit_intercept=(len(server_forwards) > 1))
-            regr.fit(self.server_backwards_base[len(self.model.model_layers):], server_backwards)
-            server_backwards = np.concatenate([server_backwards, regr.predict(self.server_backwards_base[len(self.model.model_layers):])])
+            regr = LinearRegression(fit_intercept=(len(server_backwards) > 1))
+            regr.fit(self.server_backwards_base[len(self.model.model_layers):].reshape(-1, 1), server_backwards.reshape(-1, 1))
+            server_backwards = np.concatenate([regr.predict(self.server_backwards_base[:len(self.model.model_layers)].reshape(-1, 1)).reshape(-1), server_backwards[:-1]])
             del regr
         else:
             server_forwards = self.server_forwards_base
             server_backwards = self.server_backwards_base
         
-        regr = LinearRegression()
-        regr.fit(network_sizes, network_times)
-        network_times = regr.predict(self.input_sizes)
+        regr = LinearRegression(fit_intercept=(len(network_sizes) > 1))
+        regr.fit(network_sizes.reshape(-1, 1), network_times.reshape(-1, 1))
+        network_times = regr.predict(self.input_sizes[:self.n_layer_total].reshape(-1, 1)).reshape(-1)[:-1]
         
+        # print(client_forwards.shape, client_backwards.shape)
+        # print(np.cumsum(client_forwards + client_backwards).shape)
+        # print(server_forwards.shape, server_backwards.shape)
+        # print(np.sum(server_forwards + server_backwards).shape)
+        # print(np.cumsum(server_forwards + server_backwards).shape)
+        # print(network_times.shape)
         total_times = np.cumsum(client_forwards + client_backwards) + \
                       (np.sum(server_forwards + server_backwards) - np.cumsum(server_forwards + server_backwards)) + \
                       network_times
         
+        logging.info(f'Predicted total times w.r.t. split point: {total_times}')
+        
+        total_times = total_times[1:]
         min_time_pred, best_split_point = np.min(total_times), np.argmin(total_times)
+        best_split_point += 1
+        # Prevent from leaving no layer on client side.
         
         if (min_time_pred < SPLIT_POINT_CHANGE_GAMMA * cur_time):
             while(best_split_point > len(self.model.model_layers)):
@@ -253,7 +266,7 @@ class Client(DynamicNetworkTrainer):
         for i in range(idx_start, len(self.model.model_layers)):
             summary[f'client{self.number}-forward-{i}'] = self.model.forward_meters[i].exp_avg
             summary[f'client{self.number}-backward-{i}'] = self.model.backward_meters[i].exp_avg
-        summary['network'] = (self.network_meter.exp_avg, self.network_meter.val) #! Internet time
+        summary['network'] = self.network_meter.exp_avg #! Internet time
         summary.update(self.summary_server)
         return summary
 
@@ -325,7 +338,7 @@ class Client(DynamicNetworkTrainer):
             server_backwards = np.array([real_value[f'server-backward-{i}'] for i in range(len(self.model.model_layers), self.n_layer_total)])
             network_sizes = np.array([torch.prod(torch.tensor(feat_shape_last)), 0])
             network_times = np.array([real_value['network'], self.network_meter_zero.exp_avg])
-            cur_time = real_value.values().sum()
+            cur_time = sum(real_value.values())
             
             self.auto_split(client_forwards, client_backwards, server_forwards, server_backwards, network_sizes, network_times, cur_time)
     
@@ -410,7 +423,8 @@ class Server(DynamicNetworkTrainer):
         return summary
 
     def listen(self):
-        while (True):
+        logging.debug(f'Server is listening, using device {self.device}')
+        while True:
             msgs = self.client_connection.recv()
             for (msg, kwmsg) in msgs:
                 assert kwmsg == {}    # We don`t use kwmsg currently.
@@ -485,7 +499,7 @@ class Server(DynamicNetworkTrainer):
 
                 elif re.match(r'Client\d+Ready', msg[0]):
                     client_idx = int(re.sub('Ready', "", re.sub('Client', "", msg[0])))
-                    logging.info(f'Client {client_idx} is ready for training.')
+                    logging.info(f'Client {client_idx} has connected with server')
                 
                 else:
                     raise ValueError(f'Unknown message type "{msg[0]}".')
