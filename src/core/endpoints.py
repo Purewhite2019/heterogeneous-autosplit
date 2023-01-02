@@ -194,7 +194,7 @@ class Client(DynamicNetworkTrainer):
         logging.info('Right-shifting split point...')
         
         self.server_connection.send(0, f'Client{self.number}RequestParameters', len(self.model.model_layers))
-        msgs = self.server_connection.recv(False, 0)
+        msgs = self.server_connection.recv(False, source=0)
         assert len(msgs) == 1 and msgs[0][1] == {}
         msg_type, layer, optim_state_diff = msgs[0][0]
         assert msg_type == f'ServerReplyParametersToClient{self.number}' and isinstance(layer, nn.Module)
