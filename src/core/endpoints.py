@@ -112,7 +112,7 @@ class Client(DynamicNetworkTrainer):
             
             begin = time.perf_counter_ns()
             logging.debug(f'Sending forward pre-run information to server: {len(self.model.model_layers)}, {feat_client.shape}, {y.shape}')
-            self.server_connection.send(0, False, f'Client{self.number}Forward', len(self.model.model_layers), feat_client, y)
+            self.server_connection.send(0, False, f'Client{self.number}Forward', len(self.model.model_layers), feat_client.cpu(), y.cpu())
 
             msgs = self.server_connection.recv(False, source=0)
             assert len(msgs) == 1 and msgs[0][1] == {}
@@ -129,7 +129,7 @@ class Client(DynamicNetworkTrainer):
             self.step()
 
             # Server pre-runs from layer 0
-            self.server_connection.send(0, False, f'Client{self.number}Forward', 0, X, y)
+            self.server_connection.send(0, False, f'Client{self.number}Forward', 0, X.cpu(), y.cpu())
 
             begin = time.perf_counter_ns()
             logging.debug(f'Sending forward raw-data to server: {len(self.model.model_layers)}, {feat_client.shape}, {y.shape}')
@@ -184,14 +184,14 @@ class Client(DynamicNetworkTrainer):
             self.left_shift_split_point()
 
     def left_shift_split_point(self):
-        logging.info('Left-shifting split point...')
+        logging.info(f'Left-shifting split point from {len(self.model.model_layers)}...')
         self.pop_back_layer()
         self.network_meter.reset()
         self.network_meter_zero.reset()
         logging.info('Left-shift finished')
     
     def right_shift_split_point(self):
-        logging.info('Right-shifting split point...')
+        logging.info(f'Right-shifting split point from {len(self.model.model_layers)}...')
         
         self.server_connection.send(0, f'Client{self.number}RequestParameters', len(self.model.model_layers))
         msgs = self.server_connection.recv(False, source=0)
@@ -286,7 +286,7 @@ class Client(DynamicNetworkTrainer):
 
                 begin = time.perf_counter_ns()
                 logging.debug(f'Sending forward information to server: {len(self.model.model_layers)}, {feat_client.shape}, {y.shape}')
-                self.server_connection.send(0, False, f'Client{self.number}Forward', len(self.model.model_layers), feat_client, y)
+                self.server_connection.send(0, False, f'Client{self.number}Forward', len(self.model.model_layers), feat_client.cpu(), y.cpu())
 
                 msgs = self.server_connection.recv(False, source=0)
                 assert len(msgs) == 1 and msgs[0][1] == {}
@@ -320,7 +320,7 @@ class Client(DynamicNetworkTrainer):
 
                 begin = time.perf_counter_ns()
                 logging.debug(f'Sending forward zero information to server: {len(self.model.model_layers)}, {feat_empty.shape}, {y.shape}')
-                self.server_connection.send(0, False, f'Client{self.number}Forward', len(self.model.model_layers), feat_empty, y)
+                self.server_connection.send(0, False, f'Client{self.number}Forward', len(self.model.model_layers), feat_empty.cpu(), y.cpu())
 
                 msgs = self.server_connection.recv(False, source=0)
                 assert len(msgs) == 1 and msgs[0][1] == {}
