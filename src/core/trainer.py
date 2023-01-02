@@ -28,9 +28,9 @@ class DynamicNetwork(nn.Module):
     def forward(self, x: torch.Tensor, idx_start: int=0) -> torch.Tensor:
         for i, layer in enumerate(self.model_layers[idx_start:]):
             begin = time()
-            self.last_forward_inputs[i] = x
+            self.last_forward_inputs[i + idx_start] = x
             x = layer(x)
-            self.last_forward_outputs[i] = x
+            self.last_forward_outputs[i + idx_start] = x
             x = x.detach().requires_grad_(True)
             end = time()
             self.output_size[idx_start + i] = x.shape
@@ -38,8 +38,10 @@ class DynamicNetwork(nn.Module):
         return x
     
     def backward(self, grad: torch.Tensor, idx_start: int=0) -> None:
-        for i, (last_forward_output, last_forward_input) in reversed(list(enumerate(zip(self.last_forward_outputs, self.last_forward_inputs)))):
+        for i, (last_forward_output, last_forward_input) in reversed(list(enumerate(zip(self.last_forward_outputs[idx_start:], self.last_forward_inputs[idx_start:])))):
             begin = time()
+            # print(i, last_forward_output.shape, last_forward_input.shape)
+            # print(i, last_forward_output.grad_fn, last_forward_input.grad_fn)
             last_forward_output.backward(grad)
             grad = last_forward_input.grad
             end = time()
@@ -68,7 +70,7 @@ class DynamicNetwork(nn.Module):
 
     def pop_front_layer(self) -> nn.Module:
         layer = self.model_layers[0]
-        self.model_layers.pop(0)
+        del self.model_layers[0]
         self.output_size.pop(0)
         self.last_forward_inputs.pop(0)
         self.last_forward_outputs.pop(0)
@@ -77,8 +79,10 @@ class DynamicNetwork(nn.Module):
         return layer
 
     def pop_back_layer(self) -> nn.Module:
+        # print(len(self.model_layers))
         layer = self.model_layers[-1]
-        self.model_layers.pop(-1)
+        del self.model_layers[-1]
+        # print(len(self.model_layers))
         self.output_size.pop(-1)
         self.last_forward_inputs.pop(-1)
         self.last_forward_outputs.pop(-1)
@@ -233,21 +237,23 @@ class DynamicNetworkTrainer():
         layer_idx = len(self.model.model_layers)
         layer = self.model.pop_back_layer()
         optim_state = self.optim.state_dict()
-        
+        # print(len(optim_state['state']))
         if isinstance(self.optim, optim.SGD):
-            optim_state_diff = optim_state['state'][layer_idx]
-            optim_state['state'].pop(layer_idx)
-            
-            succeed = False
-            for param_groups in optim_state['param_groups']:
-                try:
-                    param_groups['params'].remove(layer_idx)
-                    succeed = True
-                except:
-                    pass
-            if not succeed:
-                raise RuntimeError(f'Fatal error: layer {layer_idx} doesn`t exist in all param_groups of the current optimizer.')
-
+            if len(optim_state['state']) != 0:
+                optim_state_diff = optim_state['state'][layer_idx]
+                optim_state['state'].pop(layer_idx)
+                
+                succeed = False
+                for param_groups in optim_state['param_groups']:
+                    try:
+                        param_groups['params'].remove(layer_idx)
+                        succeed = True
+                    except:
+                        pass
+                if not succeed:
+                    raise RuntimeError(f'Fatal error: layer {layer_idx} doesn`t exist in all param_groups of the current optimizer.')
+            else:
+                optim_state_diff = None
         else:
             raise NotImplementedError(f'Optimizer "{type(self.optim)}" is not supported.')
         
