@@ -303,7 +303,7 @@ class Client(DynamicNetworkTrainer):
             
             for _ in range(ZERO_RUN_ITERS):
                 feat_empty = torch.rand(feat_shape_empty)
-                y = torch.zeros(size=[0])
+                y = torch.zeros(size=[0], dtype=torch.int64)
 
                 begin = time.perf_counter_ns()
                 logging.debug(f'Sending forward zero information to server: {len(self.model.model_layers)}, {feat_empty.shape}, {y.shape}')
