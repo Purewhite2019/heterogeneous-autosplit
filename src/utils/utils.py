@@ -1,8 +1,6 @@
 import torch
 from typing import Any
-import matplotlib.pyplot as plt
-from pylab import mpl
-
+import numpy as np
 
 class AverageMeter(object):
     """computes and stores the average and current value"""
@@ -27,16 +25,16 @@ class AverageMeter(object):
         self.sum += val
         self.count += n
         self.avg = self.sum / self.count
-        self.exp_avg = val if self.exp_avg is None else (self.gamma * self.exp_avg + (1-self.exp_avg) * val)
+        self.exp_avg = val if self.exp_avg is None else (self.gamma * self.exp_avg + (1 - self.gamma) * val)
         if self.should_record_values:
             self.values_buffer.append(val)
     
     def set_record_values(self, should_record_values: bool) -> None: 
-        self.should_record_values = should_record_values 
+        self.should_record_values = should_record_values
     
+    @property
     def mean_without_min_max(self):
-        return sum(sorted(self.values_buffer)[1:-1])/(len(self.values_buffer)-2)
-
+        return sum(sorted(self.values_buffer)[1:-1]) / (len(self.values_buffer) - 2)
 
 
 def accuracy(output, target, topk=(1,)):
@@ -80,6 +78,7 @@ def analyze(x: Any, depth: int=0) -> None:
     else:
         print('\t'*depth, (x if not hasattr(x, 'shape') else x.shape), sep='')
 
+
 class LinearFitting():
     def __init__(self, type:str, base_value, real_value, layers_num, c_number):
         if(type == "clientforward"):
@@ -114,10 +113,7 @@ class LinearFitting():
             self.cal_x = base_value
         self.k = 0
         self.b = 0
-        self.data_y_new = []
         self.linear_fitting()
-        # self.calculatetodraw()
-        # self.draw()
     
     def linear_fitting(self):
         size = len(self.data_x)
@@ -144,18 +140,3 @@ class LinearFitting():
         for x in self.cal_x:
             datay.append(self.k*x + self.b)
         return datay
-    
-    def calculatetodraw(self):
-        for x in self.data_x:
-            self.data_y_new.append(self.k*x + self.b)
-
-    def draw(self):
-        plt.plot(self.data_x, self.data_y_new, label="拟合曲线",color="black")
-        plt.scatter(self.data_x,self.data_y,label="离散数据")
-        mpl.rcParams['font.sans-serif'] = ['SimHei']
-        mpl.rcParams['axes.unicode_minus'] = False
-        plt.title("一元线性拟合数据")
-        plt.legend(loc="upper left")
-        plt.show()
-
-
