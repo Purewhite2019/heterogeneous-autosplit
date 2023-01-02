@@ -51,7 +51,7 @@ if __name__ == '__main__':
         runner.save_model('model_finished.pth')
     else:
         client_to_server_connection = MPIConnection(rank)
-        runner = Client(rank, dump_path, feat_extractor[:client_layer_num[rank - 1]], 'sgd', dict(lr=1e-2, momentum=0.99), dataloader_fn,
+        runner = Client(rank, dump_path, feat_extractor, client_layer_num[rank-1], 'sgd', dict(lr=1e-2, momentum=0.99), dataloader_fn,
                server_connection=client_to_server_connection)
         print(f'Client {rank} begins training')
         runner.train(n_epoch=50)

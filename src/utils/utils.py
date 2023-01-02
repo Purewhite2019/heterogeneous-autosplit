@@ -1,5 +1,7 @@
 import torch
 from typing import Any
+import matplotlib.pyplot as plt
+from pylab import mpl
 
 
 class AverageMeter(object):
@@ -8,6 +10,8 @@ class AverageMeter(object):
     def __init__(self, gamma: float=0.9):
         self.reset()
         self.gamma = gamma
+        self.should_record_values = False
+        self.values_buffer = []
 
     def reset(self):
         self.val = 0
@@ -15,6 +19,8 @@ class AverageMeter(object):
         self.sum = 0
         self.count = 0
         self.exp_avg = None
+        self.should_record_values = False
+        self.values_buffer = []
 
     def update(self, val, n=1):
         self.val = val
@@ -22,6 +28,15 @@ class AverageMeter(object):
         self.count += n
         self.avg = self.sum / self.count
         self.exp_avg = val if self.exp_avg is None else (self.gamma * self.exp_avg + (1-self.exp_avg) * val)
+        if self.should_record_values:
+            self.values_buffer.append(val)
+    
+    def set_record_values(self, should_record_values: bool) -> None: 
+        self.should_record_values = should_record_values 
+    
+    def mean_without_min_max(self):
+        return sum(sorted(self.values_buffer)[1:-1])/(len(self.values_buffer)-2)
+
 
 
 def accuracy(output, target, topk=(1,)):
@@ -64,3 +79,83 @@ def analyze(x: Any, depth: int=0) -> None:
     
     else:
         print('\t'*depth, (x if not hasattr(x, 'shape') else x.shape), sep='')
+
+class LinearFitting():
+    def __init__(self, type:str, base_value, real_value, layers_num, c_number):
+        if(type == "clientforward"):
+            self.data_x = [base_value[f'client{c_number}-forwardbase-{i}'] for i in range(layers_num)]
+            self.data_y = [real_value[f'client{c_number}-forward-{i}'] for i in range(layers_num)]
+            self.cal_x = [base_value[f'client{c_number}-forwardbase-{i}'] for i in range(layers_num, 7)]
+        elif(type == "clientbackward"):
+            self.data_x = [base_value[f'client{c_number}-backwardbase-{i}'] for i in range(layers_num)]
+            self.data_y = [real_value[f'client{c_number}-backward-{i}'] for i in range(layers_num)]
+            self.cal_x = [base_value[f'client{c_number}-backwardbase-{i}'] for i in range(layers_num, 7)]
+        elif(type == "client"):
+            self.data_x = [(base_value[f'client{c_number}-forwardbase-{i}']+base_value[f'client{c_number}-backwardbase-{i}']) for i in range(layers_num)]
+            self.data_y = [(real_value[f'client{c_number}-forward-{i}']+real_value[f'client{c_number}-backward-{i}']) for i in range(layers_num)]
+            self.cal_x = [(base_value[f'client{c_number}-forwardbase-{i}']+base_value[f'client{c_number}-backwardbase-{i}']) for i in range(layers_num, 7)]
+        elif(type == "serverforward"):
+            self.data_x = [base_value[f'server-forwardbase-{i}'] for i in range(layers_num, 8)]
+            # print(self.data_x)
+            self.data_y = [real_value[f'server-forward-{i}'] for i in range(layers_num, 8)]
+            # print(self.data_y)
+            self.cal_x = [base_value[f'server-forwardbase-{i}'] for i in range(layers_num)]
+        elif(type == "serverbackward"):
+            self.data_x = [base_value[f'server-backwardbase-{i}'] for i in range(layers_num, 8)]
+            self.data_y = [real_value[f'server-backward-{i}'] for i in range(layers_num, 8)]
+            self.cal_x = [base_value[f'server-backwardbase-{i}'] for i in range(layers_num)]
+        elif(type == "server"):
+            self.data_x = [(base_value[f'server-forwardbase-{i}']+base_value[f'server-backwardbase-{i}']) for i in range(layers_num, 8)]
+            self.data_y = [(real_value[f'server-forward-{i}']+real_value[f'server-backward-{i}']) for i in range(layers_num, 8)]
+            self.cal_x = [(base_value[f'server-forwardbase-{i}']+base_value[f'server-backwardbase-{i}']) for i in range(layers_num)]
+        elif(type == "network"):
+            self.data_x = [(base_value[layers_num])/8, base_value[layers_num]]
+            self.data_y = [real_value['network_zero'], real_value['network']]
+            self.cal_x = base_value
+        self.k = 0
+        self.b = 0
+        self.data_y_new = []
+        self.linear_fitting()
+        # self.calculatetodraw()
+        # self.draw()
+    
+    def linear_fitting(self):
+        size = len(self.data_x)
+        i = 0
+        sum_xy = 0
+        sum_y = 0
+        sum_x = 0
+        sum_sqare_x = 0
+        average_x = 0;
+        average_y = 0;
+        while i < size:
+            sum_xy += self.data_x[i]*self.data_y[i];
+            sum_y += self.data_y[i]
+            sum_x += self.data_x[i]
+            sum_sqare_x += self.data_x[i]*self.data_x[i]
+            i += 1
+        average_x = sum_x/size
+        average_y = sum_y/size
+        self.k = (size*sum_xy - sum_x*sum_y)/(size*sum_sqare_x - sum_x*sum_x)
+        self.b = average_y - average_x*self.k
+    
+    def calculate(self):
+        datay = []
+        for x in self.cal_x:
+            datay.append(self.k*x + self.b)
+        return datay
+    
+    def calculatetodraw(self):
+        for x in self.data_x:
+            self.data_y_new.append(self.k*x + self.b)
+
+    def draw(self):
+        plt.plot(self.data_x, self.data_y_new, label="拟合曲线",color="black")
+        plt.scatter(self.data_x,self.data_y,label="离散数据")
+        mpl.rcParams['font.sans-serif'] = ['SimHei']
+        mpl.rcParams['axes.unicode_minus'] = False
+        plt.title("一元线性拟合数据")
+        plt.legend(loc="upper left")
+        plt.show()
+
+

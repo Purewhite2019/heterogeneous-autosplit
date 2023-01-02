@@ -3,7 +3,7 @@ from src.utils.utils import AverageMeter
 import os
 import logging
 from typing import List, Tuple, Any, Dict
-from time import time
+from time import time, time_ns, perf_counter_ns
 
 import torch
 import torch.nn as nn
@@ -27,24 +27,32 @@ class DynamicNetwork(nn.Module):
     
     def forward(self, x: torch.Tensor, idx_start: int=0) -> torch.Tensor:
         for i, layer in enumerate(self.model_layers[idx_start:]):
-            begin = time()
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+            begin = perf_counter_ns()
             self.last_forward_inputs[i + idx_start] = x
             x = layer(x)
             self.last_forward_outputs[i + idx_start] = x
             x = x.detach().requires_grad_(True)
-            end = time()
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+            end = perf_counter_ns()
             self.output_size[idx_start + i] = x.shape
             self.forward_meters[idx_start+i].update(end - begin)
         return x
     
     def backward(self, grad: torch.Tensor, idx_start: int=0) -> None:
         for i, (last_forward_output, last_forward_input) in reversed(list(enumerate(zip(self.last_forward_outputs[idx_start:], self.last_forward_inputs[idx_start:])))):
-            begin = time()
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+            begin = perf_counter_ns()
             # print(i, last_forward_output.shape, last_forward_input.shape)
             # print(i, last_forward_output.grad_fn, last_forward_input.grad_fn)
             last_forward_output.backward(grad)
             grad = last_forward_input.grad
-            end = time()
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+            end = perf_counter_ns()
             self.backward_meters[idx_start+i].update(end - begin)
 
     def push_front_layer(self, layer: nn.Module) -> None:

@@ -1,6 +1,6 @@
 from src.core.trainer import DynamicNetwork, DynamicNetworkTrainer
 from src.core.connections import Connection
-from src.utils.utils import AverageMeter
+from src.utils.utils import AverageMeter, LinearFitting
 
 import os
 import time
@@ -29,7 +29,7 @@ DATE_FORMAT = '%Y-%m-%d %H:%M:%S'
 
 class Client(DynamicNetworkTrainer):
     def __init__(self, number: int, dump_path: str,
-                 model_layers: List[nn.Module], optim_alg: str, optim_kwargs: dict,
+                 model_layers: List[nn.Module], n_layers_left: int, optim_alg: str, optim_kwargs: dict,
                  dataloader_fn: Callable[[int], DataLoader],
                  server_connection: Connection) -> None:
         super().__init__(model_layers, optim_alg, optim_kwargs)
@@ -37,6 +37,7 @@ class Client(DynamicNetworkTrainer):
         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
         self.number = number
         self.dump_path = dump_path
+        self.n_layers_left = n_layers_left
         self.dataloader = dataloader_fn(self.number)
         self.server_connection = server_connection
 
@@ -66,9 +67,51 @@ class Client(DynamicNetworkTrainer):
         self.model.train()
         
         self.network_meter = AverageMeter()
+        self.network_meter_zero = AverageMeter()
         self.summary_server = None
+        self.shape_scale = [24576, 524288, 262144, 131072, 65536, 32768, 8192, 8192, 80]
+        self.network_time = []
         
-        #TODO: 空跑
+        # Client端空跑
+        baseX = torch.randn(10,8,3,32,32)
+        baseY = torch.randint(10,size=[10,8])
+        self.base_value = dict()
+        self.real_value = dict()
+        for i in range(len(self.model.model_layers)):
+            self.model.forward_meters[i].set_record_values(True)
+            self.model.backward_meters[i].set_record_values(True)
+                
+        for X, y in zip(baseX, baseY):
+            X, y = X.to(self.device), y.to(self.device)
+            feat_client = self.forward(X)
+            
+            logging.debug(f'Sending forwardbase information to server: {len(self.model.model_layers)}, {feat_client.shape}, {y.shape}')
+            self.server_connection.send(0, False, f'Client{self.number}RunforBaseValue', len(self.model.model_layers), feat_client, y)
+
+            msgs = self.server_connection.recv(False, source=0)
+            assert len(msgs) == 1 and msgs[0][1] == {}
+            msg_type, feat_grad, server_base_value = msgs[0][0]
+            assert msg_type == f'ServerBackwardToClientRunforBaseValue{self.number}' and isinstance(feat_grad, torch.Tensor)
+            feat_grad = feat_grad.to(self.device)
+            logging.debug(f'Received backwardbase information from server: {msg_type}, {feat_grad.shape}')
+
+            self.zero_grad()
+            self.backward(feat_grad)
+      
+        for i in range(len(self.model.model_layers)):
+            self.base_value[f'client{self.number}-forwardbase-{i}'] = self.model.forward_meters[i].mean_without_min_max()
+            self.base_value[f'client{self.number}-backwardbase-{i}'] = self.model.backward_meters[i].mean_without_min_max()
+        self.base_value.update(server_base_value)
+        for i in range(len(self.model.model_layers)):
+            self.model.forward_meters[i].set_record_values(False)
+            self.model.backward_meters[i].set_record_values(False)
+        print(self.base_value)
+        
+        # 空跑结束，恢复client端层数
+        while(len(self.model.model_layers) > self.n_layers_left):
+            self.left_shift_split_point()
+            print(len(self.model.model_layers))
+        
 
     def left_shift_split_point(self):
         logging.info('Left-shifting split point...')
@@ -114,12 +157,36 @@ class Client(DynamicNetworkTrainer):
         else:
             self.unchange_times += 1
 
+    def auto_split(self):
+        predict_time = [0 for i in range(10)]
+        for i in range(7):
+            predict_time[0] += self.real_value[f'server-forward-{i}'] + self.real_value[f'server-backward-{i}']
+        predict_time[0] += self.network_time[0]
+        min = predict_time[0]
+        sub_min = 10000
+        split_point = 0
+        
+        for i in range(7):
+            predict_time[i+1] = predict_time[i] + self.network_time[i+1] + self.real_value[f'client{self.number}-forward-{i}'] + self.real_value[f'client{self.number}-backward-{i}']
+            predict_time[i+1] -= self.network_time[i] + self.real_value[f'server-forward-{i}'] + self.real_value[f'server-backward-{i}']
+            if(predict_time[i+1] < min):
+                min = predict_time[i+1]
+                split_point = i+1
+                sub_min = min
+            elif(predict_time[i+1] < sub_min):
+                sub_min = predict_time[i+1]
+        if(min < 0.95*sub_min):
+            while(split_point > len(self.model.model_layers)):
+                self.right_shift_split_point()
+            while(split_point < len(self.model.model_layers)):
+                self.left_shift_split_point()
+        
     def summarize(self, idx_start: int = 0) -> Dict:
         summary = dict()
         for i in range(idx_start, len(self.model.model_layers)):
             summary[f'client{self.number}-forward-{i}'] = self.model.forward_meters[i].exp_avg
             summary[f'client{self.number}-backward-{i}'] = self.model.backward_meters[i].exp_avg
-        summary['network'] = self.network_meter.exp_avg #! Internet time + Server time
+        summary['network'] = self.network_meter.exp_avg #! Internet time
         summary.update(self.summary_server)
         return summary
 
@@ -151,16 +218,91 @@ class Client(DynamicNetworkTrainer):
                 self.step()
                 
                 self.merge_server_summary(summary_server)
-                summary = self.summarize()
-                summary_string = pformat(summary)
-                if (i + 1) % 20 == 0:
-                    self.adjust_split_point()
-                logging.info(f'For a batch size of {X.shape[0]}, Timing summary: {summary_string}')
+                self.real_value = self.summarize()
+                # summary_string = pformat(summary)
+                # if (i + 1) % 20 == 0:
+                #     self.adjust_split_point()
+                # logging.info(f'For a batch size of {X.shape[0]}, Timing summary: {summary_string}')
         
-        #TODO: Our code should be placed here.
-        #TODO: sent a 0x0 data and measure corresponding time
-        #TODO: Predict
-        #TODO: Auto split
+                # sent a 0x0 data and measure corresponding time
+                if len(self.model.model_layers) == 0:
+                    feat_client = torch.randn(0,3,32,32)
+                elif len(self.model.model_layers) == 1:
+                    feat_client = torch.randn(0,64,32,32)
+                elif len(self.model.model_layers) == 2:
+                    feat_client = torch.randn(0,128,16,16)
+                elif len(self.model.model_layers) == 3:
+                    feat_client = torch.randn(0,256,8,8)
+                elif len(self.model.model_layers) == 4:
+                    feat_client = torch.randn(0,512,4,4)
+                elif len(self.model.model_layers) == 5:
+                    feat_client = torch.randn(0,1024,2,2)
+                elif len(self.model.model_layers) == 6:
+                    feat_client = torch.randn(0,1024,1,1)
+                elif len(self.model.model_layers) == 7:
+                    feat_client = torch.randn(0,1024)
+                elif len(self.model.model_layers) == 8:
+                    feat_client = torch.randn(0,10)
+                y = torch.randint(10,size = [0])
+                begin = time.time()
+                logging.debug(f'Sending forward_network_zero information to server: {len(self.model.model_layers)}, {feat_client.shape}, {y.shape}')
+                self.server_connection.send(0, False, f'Client{self.number}RunforNetworkTime', len(self.model.model_layers), feat_client, y)
+
+                msgs = self.server_connection.recv(False, source=0)
+                assert len(msgs) == 1 and msgs[0][1] == {}
+                msg_type, feat_grad, summary_server = msgs[0][0]
+                assert msg_type == f'ServerBackwardToClientRunforNetworkTime{self.number}' and isinstance(feat_grad, torch.Tensor)
+                feat_grad = feat_grad.to(self.device)
+                logging.debug(f'Received backward_network_zero information from server: {msg_type}, {feat_grad.shape}')
+
+                end = time.time()
+                self.network_meter_zero.update(end - begin - sum(summary_server.values()))   # Server total time - server train/inference time
+                self.real_value['network_zero'] = self.network_meter_zero.exp_avg
+                
+            # Predict
+            if len(self.model.model_layers) >= 2:
+                CForPrediction = LinearFitting("clientforward", self.base_value, self.real_value, len(self.model.model_layers), self.number)
+                CForPredictionResult = CForPrediction.calculate()
+                for i in range(len(self.model.model_layers), 7):
+                    self.real_value[f'client{self.number}-forward-{i}'] = CForPredictionResult[i-len(self.model.model_layers)]
+                
+                CBackPrediction = LinearFitting("clientbackward", self.base_value, self.real_value, len(self.model.model_layers), self.number)
+                CBackPredictionResult = CBackPrediction.calculate()
+                for i in range(len(self.model.model_layers), 7):
+                    self.real_value[f'client{self.number}-backward-{i}'] = CBackPredictionResult[i-len(self.model.model_layers)]
+            elif len(self.model.model_layers) == 1:
+                k1 = self.real_value[f'client{self.number}-forward-0']/self.base_value[f'client{self.number}-forwardbase-0']
+                k2 = self.real_value[f'client{self.number}-backward-0']/self.base_value[f'client{self.number}-backwardbase-0']
+                for i in range(len(self.model.model_layers), 7):
+                    self.real_value[f'client{self.number}-forward-{i}'] = k1 * self.base_value[f'client{self.number}-forwardbase-{i}']
+                    self.real_value[f'client{self.number}-backward-{i}'] = k2 * self.base_value[f'client{self.number}-backwardbase-{i}']
+            else:
+                for i in range(len(self.model.model_layers), 7):
+                    self.real_value[f'client{self.number}-forward-{i}'] = self.base_value[f'client{self.number}-forwardbase-{i}']
+                    self.real_value[f'client{self.number}-backward-{i}'] = self.base_value[f'client{self.number}-backwardbase-{i}']
+            
+            if len(self.model.model_layers) < 7:
+                SForPrediction = LinearFitting("serverforward", self.base_value, self.real_value, len(self.model.model_layers), self.number)
+                SForPredictionResult = SForPrediction.calculate()
+                for i in range(len(self.model.model_layers)):
+                    self.real_value[f'server-forward-{i}'] = SForPredictionResult[i]
+                
+                SBackPrediction = LinearFitting("serverbackward", self.base_value, self.real_value, len(self.model.model_layers), self.number)
+                SBackPredictionResult = SBackPrediction.calculate()
+                for i in range(len(self.model.model_layers)):
+                    self.real_value[f'server-backward-{i}'] = SBackPredictionResult[i]
+            else:
+                k1 = self.real_value[f'server-forward-7']/self.base_value[f'server-forwardbase-7']
+                k2 = self.real_value[f'server-backward-7']/self.base_value[f'server-backwardbase-7']
+                for i in range(len(self.model.model_layers)):
+                    self.real_value[f'server-forward-{i}'] = k1 * self.base_value[f'server-forwardbase-{i}']
+                    self.real_value[f'server-backward-{i}'] = k2 * self.base_value[f'server-backwardbase-{i}']
+            
+            NPrediction = LinearFitting("network", self.shape_scale, self.real_value, len(self.model.model_layers), self.number)
+            self.network_time = NPrediction.calculate()
+            
+            # Auto split
+            self.auto_split()
     
     def wait_for_sync(self) -> None:
         logging.info('Synchronizing with the server...')
@@ -198,7 +340,6 @@ class Client(DynamicNetworkTrainer):
     #* my idea: when an epoch of all client ends or a timer expires, they synchronize with the server.
     #* and upon synchronization with server, clients adapt its split points accordingly. 
 
-
 class Server(DynamicNetworkTrainer):
     def __init__(self, dump_path: str,
                  whole_model_layers: List[nn.Module], optim_alg: str, optim_kwargs: dict,
@@ -235,6 +376,44 @@ class Server(DynamicNetworkTrainer):
 
         self.model.to(self.device)
         self.model.train()
+        
+        # Server端空跑
+        baseX = torch.randn(10,8,3,32,32)
+        baseY = torch.randint(10,size=[10,8])
+        self.base_value = dict()
+        layer_idx = 0
+        for i in range(len(self.model.model_layers)):
+            self.model.forward_meters[i].set_record_values(True)
+            self.model.backward_meters[i].set_record_values(True)
+            
+        for feat_client, y in zip(baseX, baseY):
+            # Measure training/inference time w.r.t. batch
+            if feat_client.shape[0] not in self.forward_meters.keys():
+                self.forward_meters[feat_client.shape[0]] = [AverageMeter() for _ in range(len(self.model.model_layers))]
+                self.backward_meters[feat_client.shape[0]] = [AverageMeter() for _ in range(len(self.model.model_layers))]
+            
+            # Load features and labels to device
+            feat_client, y = feat_client.to(self.device), y.to(self.device)
+            feat_client.requires_grad_(True)
+            # Server doesn't need self.forward(), self.model.forward() is OK, because it doesn't need to store any extra information..
+            logits = self.model.forward(feat_client, layer_idx).detach().requires_grad_(True)
+            loss = F.cross_entropy(logits, y)
+
+            self.zero_grad()
+            loss.backward()
+            self.backward(logits.grad.detach(), layer_idx)
+            
+        # for i in range(len(self.model.model_layers)):
+        #     print(self.model.forward_meters[i].values_buffer)
+        for i in range(len(self.model.model_layers)):
+            self.base_value[f'server-forwardbase-{i}'] = self.model.forward_meters[i].mean_without_min_max()
+            self.base_value[f'server-backwardbase-{i}'] = self.model.backward_meters[i].mean_without_min_max()
+        
+        for i in range(len(self.model.model_layers)):
+            self.model.forward_meters[i].set_record_values(False)
+            self.model.backward_meters[i].set_record_values(False)
+        # print(self.base_value)
+        
 
     def summarize(self, idx_start: int=0) -> Dict:
         summary = dict()
@@ -281,6 +460,64 @@ class Server(DynamicNetworkTrainer):
                     self.client_connection.send(client_idx, False, f'ServerBackwardToClient{client_idx}', feat_client.grad.detach().cpu(), self.summarize(layer_idx))
                     logging.debug(f'Backward information are successfully sent to client {client_idx}')
 
+                elif re.match(r'Client\d+RunforBaseValue', msg[0]):
+                    layer_idx, feat_client, y = msg[1:]
+                    client_idx = int(re.sub('RunforBaseValue', "", re.sub('Client', "", msg[0])))
+
+                    logging.debug(f'Received forwardbase information from client {client_idx}: {layer_idx}, {feat_client.shape}, {y.shape}')
+                    
+                    # Measure training/inference time w.r.t. batch
+                    if feat_client.shape[0] not in self.forward_meters.keys():
+                        self.forward_meters[feat_client.shape[0]] = [AverageMeter() for _ in range(len(self.model.model_layers))]
+                        self.backward_meters[feat_client.shape[0]] = [AverageMeter() for _ in range(len(self.model.model_layers))]
+                    self.model.forward_meters = self.forward_meters[feat_client.shape[0]]
+                    self.model.backward_meters = self.backward_meters[feat_client.shape[0]]
+                    
+                    # Load features and labels to device
+                    feat_client, y = feat_client.to(self.device), y.to(self.device)
+                    feat_client.requires_grad_(True)
+                    # Server doesn't need self.forward(), self.model.forward() is OK, because it doesn't need to store any extra information..
+                    logits = self.model(feat_client, layer_idx).detach().requires_grad_(True)
+                    loss = F.cross_entropy(logits, y)
+
+                    self.zero_grad()
+                    loss.backward()
+                    # print(logits.shape, logits.grad.shape)
+                    self.backward(logits.grad.detach(), layer_idx)
+
+                    logging.debug(f'Sending backwardbase information to client {client_idx}: {feat_client.shape}')
+                    self.client_connection.send(client_idx, False, f'ServerBackwardToClientRunforBaseValue{client_idx}', feat_client.grad.detach().cpu(), self.base_value)
+                    logging.debug(f'Backwardbase information are successfully sent to client {client_idx}')
+                
+                elif re.match(r'Client\d+RunforNetworkTime', msg[0]):
+                    layer_idx, feat_client, y = msg[1:]
+                    client_idx = int(re.sub('RunforNetworkTime', "", re.sub('Client', "", msg[0])))
+
+                    logging.debug(f'Received forward_network_zero information from client {client_idx}: {layer_idx}, {feat_client.shape}, {y.shape}')
+                    
+                    # Measure training/inference time w.r.t. batch
+                    if feat_client.shape[0] not in self.forward_meters.keys():
+                        self.forward_meters[feat_client.shape[0]] = [AverageMeter() for _ in range(len(self.model.model_layers))]
+                        self.backward_meters[feat_client.shape[0]] = [AverageMeter() for _ in range(len(self.model.model_layers))]
+                    self.model.forward_meters = self.forward_meters[feat_client.shape[0]]
+                    self.model.backward_meters = self.backward_meters[feat_client.shape[0]]
+                    
+                    # Load features and labels to device
+                    feat_client, y = feat_client.to(self.device), y.to(self.device)
+                    feat_client.requires_grad_(True)
+                    # Server doesn't need self.forward(), self.model.forward() is OK, because it doesn't need to store any extra information..
+                    logits = self.model(feat_client, layer_idx).detach().requires_grad_(True)
+                    loss = F.cross_entropy(logits, y)
+
+                    self.zero_grad()
+                    loss.backward()
+                    # print(logits.shape, logits.grad.shape)
+                    self.backward(logits.grad.detach(), layer_idx)
+
+                    logging.debug(f'Sending backward_network_zero information to client {client_idx}: {feat_client.shape}')
+                    self.client_connection.send(client_idx, False, f'ServerBackwardToClientRunforNetworkTime{client_idx}', feat_client.grad.detach().cpu(), self.base_value)
+                    logging.debug(f'Backward_network_zero information are successfully sent to client {client_idx}')
+
                 elif re.match(r'Client\d+RequestParameters', msg[0]):
                     layer_idx = msg[1]
                     client_idx = int(re.sub('RequestParameters', "", re.sub('Client', "", msg[0])))
@@ -317,8 +554,8 @@ class Server(DynamicNetworkTrainer):
                     self.client_connection.send(client_idx, False, f'ServerToClient{client_idx}')
                     logging.debug(f'Acknowledge information are successfully sent to client {client_idx}')
 
-                elif re.match(r'Client\d+Ready', msg):
-                    client_idx = int(re.sub('Ready', "", re.sub('Client', "", msg)))
+                elif re.match(r'Client\d+Ready', msg[0]):
+                    client_idx = int(re.sub('Ready', "", re.sub('Client', "", msg[0])))
                     logging.info(f'Client {client_idx} is ready for training.')
                 
                 else:
