@@ -27,7 +27,7 @@ class AverageMeter(object):
         self.sum += val
         self.count += n
         self.avg = self.sum / self.count
-        self.exp_avg = val if self.exp_avg is None else (self.gamma * self.exp_avg + (1-self.exp_avg) * val)
+        self.exp_avg = val if self.exp_avg is None else (self.gamma * self.exp_avg + (1-self.gamma) * val)
         if self.should_record_values:
             self.values_buffer.append(val)
     
