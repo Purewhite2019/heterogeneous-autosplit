@@ -12,9 +12,13 @@ app = Flask('heterogeneous-autosplit-flask')
 CORS(app)
 flask_pipe = None
 
+setting = ''
 accuracy_meters = dict()
 client_infos = dict()
 
+@app.route('/setting')
+def get_setting() -> str:
+    return setting
 
 @app.route('/data')
 def get_data() -> str:
@@ -22,8 +26,7 @@ def get_data() -> str:
     return json.dumps(client_infos)
 
 def update() -> None:
-    global client_infos
-    global topology
+    global accuracy_meters, client_infos
     
     while flask_pipe.poll():
         client_idx, layer_idx, corrects, n_samples, short_summary, feat_size = flask_pipe.recv()
@@ -40,13 +43,14 @@ def update() -> None:
         client_infos[client_idx]['time'] = short_summary
         client_infos[client_idx]['n_layer'] = layer_idx
 
-def init_flask(pipe: Connection) -> None:
+def init_flask(pipe: Connection, setting_: dict={}) -> None:
     """Initializer of the flask server providing data for the frontend visualization.
 
     Args:
         pipe (Connection): pipe used for communication between flask and split learning server
     """
-    global flask_pipe
+    global flask_pipe, setting
     flask_pipe = pipe
+    setting = json.dumps(setting_)
 
     app.run(host="127.0.0.1", port=6000)

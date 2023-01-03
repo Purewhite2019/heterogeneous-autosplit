@@ -51,7 +51,9 @@ if __name__ == '__main__':
         print('Server2Clients\' connections are all established')
         
         pipe = multiprocessing.Pipe()
-        proc_flask = multiprocessing.Process(target=init_flask, args=(pipe[0], ))
+        proc_flask = multiprocessing.Process(target=init_flask, args=(pipe[0], 
+                                                                      dict(n_layers_total=len(feat_extractor)+len(classifier),
+                                                                           client_num=len(client_layer_num))))
         proc_flask.start()
         
         runner = Server(dump_path, feat_extractor + classifier, 'sgd', dict(lr=1e-3, momentum=0.99),

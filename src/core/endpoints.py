@@ -77,7 +77,7 @@ class Client(DynamicNetworkTrainer):
         
         def exit_handler(signum, frame):
             logging.warning(f'Interrupt caught ({signum}, {frame}), saving model and shutting down...')
-            self.save_model(os.path.join(self.dump_path, f'model_client{self.number}.pth'))
+            self.save_model(f'model_client{self.number}.pth')
             exit(0)
 
         signal.signal(signal.SIGINT, exit_handler)
@@ -445,7 +445,7 @@ class Server(DynamicNetworkTrainer):
         
         def exit_handler(signum, frame):
             logging.warning(f'Interrupt caught ({signum}, {frame}), saving model and shutting down...')
-            self.save_model(os.path.join(self.dump_path, 'model_server.pth'))
+            self.save_model('model_server.pth')
             exit(0)
 
         signal.signal(signal.SIGINT, exit_handler)
