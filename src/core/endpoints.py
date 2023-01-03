@@ -260,7 +260,7 @@ class Client(DynamicNetworkTrainer):
         logging.info(f'Current time consumption: {cur_time}, Estimated min time consumption: {min_time_pred}')
         
         if (min_time_pred < SPLIT_POINT_CHANGE_GAMMA * cur_time):
-            logging.info(f'Split point shifting to {best_split_point} / {self.n_layer_total}')
+            logging.info(f'Estimated best split point is {best_split_point} / {self.n_layer_total}, shifting...')
             while(best_split_point > len(self.model.model_layers)):
                 self.right_shift_split_point()
             while(best_split_point < len(self.model.model_layers)):
