@@ -2,14 +2,22 @@ import sys
 sys.path.append('../')
 
 import time
+import torch
+import logging
 from torch.utils.data import random_split
 import torchvision
 import torchvision.transforms as T
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Subset
 
 from src.core import Client, Server, MPIConnection
 from src.models.cifar import mobilenet
 from mpi4py import MPI
+
+import multiprocessing
+from multiprocessing.connection import Connection
+from server_flask import init_flask
+
+import os
 
 comm = MPI.COMM_WORLD
 MAX_RANK = comm.Get_size()
@@ -28,6 +36,7 @@ if __name__ == '__main__':
                                                             T.ToTensor(),
                                                             T.Normalize(mean=(0.4914, 0.4822, 0.4465),
                                                                         std=(0.247, 0.243, 0.261))]))
+    whole_train_dataset = Subset(whole_train_dataset, range(1000))
     client_datasets = random_split(whole_train_dataset, [len(whole_train_dataset) // 2,
                                                          len(whole_train_dataset) - len(whole_train_dataset) // 2])
 
@@ -40,12 +49,18 @@ if __name__ == '__main__':
     if is_server(rank):
         server_to_client_connection = MPIConnection(0)
         print('Server2Clients\' connections are all established')
+        
+        pipe = multiprocessing.Pipe()
+        proc_flask = multiprocessing.Process(target=init_flask, args=(pipe[0], ))
+        proc_flask.start()
+        
         runner = Server(dump_path, feat_extractor + classifier, 'sgd', dict(lr=1e-3, momentum=0.99),
-               server_to_client_connection, MAX_RANK - 1)
+        server_to_client_connection, MAX_RANK - 1, pipe=pipe[1])
         print('Server begins listening')
         runner.listen()
         print('Server terminate listening')
         runner.save_model('model_finished.pth')
+        proc_flask.join()
     else:
         client_to_server_connection = MPIConnection(rank)
         runner = Client(rank, dump_path, feat_extractor, client_layer_num[rank-1], 'sgd', dict(lr=1e-2, momentum=0.99), dataloader_fn,

@@ -10,6 +10,7 @@ from collections import deque
 from tqdm import trange
 from pprint import pformat
 from copy import deepcopy
+import signal
 
 import torch
 import torch.nn as nn
@@ -20,7 +21,9 @@ import torch.nn.functional as F
 import numpy as np
 from sklearn.linear_model import LinearRegression
 
-from typing import List, Tuple, Any, Callable, Dict, Union
+import multiprocessing.connection
+
+from typing import List, Tuple, Any, Callable, Dict, Union, Optional
 from functools import reduce
 
 LOG_LEVEL = logging.INFO
@@ -72,6 +75,14 @@ class Client(DynamicNetworkTrainer):
         self.model.to(self.device)
         self.model.train()
         
+        def exit_handler(signum, frame):
+            logging.warning(f'Interrupt caught ({signum}, {frame}), saving model and shutting down...')
+            self.save_model(os.path.join(self.dump_path, f'model_client{self.number}.pth'))
+            exit(0)
+
+        signal.signal(signal.SIGINT, exit_handler)
+        signal.signal(signal.SIGTERM, exit_handler)
+        
         self.n_layer_total = len(model_layers)+1
         logging.info(f'Preliminary initialization succeeded, using device {self.device}, begin pre-running...')
         
@@ -112,7 +123,7 @@ class Client(DynamicNetworkTrainer):
             
             begin = time.perf_counter_ns()
             logging.debug(f'Sending forward pre-run information to server: {len(self.model.model_layers)}, {feat_client.shape}, {y.shape}')
-            self.server_connection.send(0, False, f'Client{self.number}Forward', len(self.model.model_layers), feat_client.cpu(), y.cpu())
+            self.server_connection.send(0, False, f'Client{self.number}Forward', len(self.model.model_layers), feat_client.cpu(), y.cpu(), {})
 
             msgs = self.server_connection.recv(False, source=0)
             assert len(msgs) == 1 and msgs[0][1] == {}
@@ -129,7 +140,7 @@ class Client(DynamicNetworkTrainer):
             self.step()
 
             # Server pre-runs from layer 0
-            self.server_connection.send(0, False, f'Client{self.number}Forward', 0, X.cpu(), y.cpu())
+            self.server_connection.send(0, False, f'Client{self.number}Forward', 0, X.cpu(), y.cpu(), {})
 
             begin = time.perf_counter_ns()
             logging.debug(f'Sending forward raw-data to server: {len(self.model.model_layers)}, {feat_client.shape}, {y.shape}')
@@ -275,6 +286,15 @@ class Client(DynamicNetworkTrainer):
         summary.update(self.summary_server)
         return summary
 
+    def short_summarize(self, idx_start: int = 0) -> Dict:
+        if self.network_meter.count == 0:
+            return {}
+        summary = dict()
+        for i in range(idx_start, len(self.model.model_layers)):
+            summary[f'Client-{i}'] = self.model.forward_meters[i].exp_avg + self.model.backward_meters[i].exp_avg
+        summary['Network'] = self.network_meter.exp_avg
+        return summary
+
     def merge_server_summary(self, summary_server: dict) -> None:
         self.summary_server = summary_server
         
@@ -291,7 +311,7 @@ class Client(DynamicNetworkTrainer):
 
                 begin = time.perf_counter_ns()
                 logging.debug(f'Sending forward information to server: {len(self.model.model_layers)}, {feat_client.shape}, {y.shape}')
-                self.server_connection.send(0, False, f'Client{self.number}Forward', len(self.model.model_layers), feat_client.cpu(), y.cpu())
+                self.server_connection.send(0, False, f'Client{self.number}Forward', len(self.model.model_layers), feat_client.cpu(), y.cpu(), self.short_summarize())
 
                 msgs = self.server_connection.recv(False, source=0)
                 assert len(msgs) == 1 and msgs[0][1] == {}
@@ -325,7 +345,7 @@ class Client(DynamicNetworkTrainer):
 
                 begin = time.perf_counter_ns()
                 logging.debug(f'Sending forward zero information to server: {len(self.model.model_layers)}, {feat_empty.shape}, {y.shape}')
-                self.server_connection.send(0, False, f'Client{self.number}Forward', len(self.model.model_layers), feat_empty.cpu(), y.cpu())
+                self.server_connection.send(0, False, f'Client{self.number}Forward', len(self.model.model_layers), feat_empty.cpu(), y.cpu(), {})
 
                 msgs = self.server_connection.recv(False, source=0)
                 assert len(msgs) == 1 and msgs[0][1] == {}
@@ -386,7 +406,8 @@ class Client(DynamicNetworkTrainer):
 class Server(DynamicNetworkTrainer):
     def __init__(self, dump_path: str,
                  whole_model_layers: List[nn.Module], optim_alg: str, optim_kwargs: dict,
-                 client_connection: Connection, client_num: int) -> None:
+                 client_connection: Connection, client_num: int,
+                 pipe: multiprocessing.connection=None) -> None:
         super().__init__(whole_model_layers, optim_alg, optim_kwargs)
 
 
@@ -395,6 +416,8 @@ class Server(DynamicNetworkTrainer):
         self.client_connection = client_connection
         self.client_num = client_num
         self.wait_for_sync = [None] * client_num
+        
+        self.pipe = pipe
         
         self.forward_meters = dict()
         self.backward_meters = dict()
@@ -419,6 +442,14 @@ class Server(DynamicNetworkTrainer):
 
         self.model.to(self.device)
         self.model.train()
+        
+        def exit_handler(signum, frame):
+            logging.warning(f'Interrupt caught ({signum}, {frame}), saving model and shutting down...')
+            self.save_model(os.path.join(self.dump_path, 'model_server.pth'))
+            exit(0)
+
+        signal.signal(signal.SIGINT, exit_handler)
+        signal.signal(signal.SIGTERM, exit_handler)
 
     def summarize(self, idx_start: int=0) -> Dict:
         summary = dict()
@@ -434,7 +465,7 @@ class Server(DynamicNetworkTrainer):
             for (msg, kwmsg) in msgs:
                 assert kwmsg == {}    # We don`t use kwmsg currently.
                 if re.match(r'Client\d+Forward', msg[0]):
-                    layer_idx, feat_client, y = msg[1:]
+                    layer_idx, feat_client, y, short_summary = msg[1:]
                     client_idx = int(re.sub('Forward', "", re.sub('Client', "", msg[0])))
 
                     logging.debug(f'Received forward information from client {client_idx}: {layer_idx}, {feat_client.shape}, {y.shape}')
@@ -461,7 +492,12 @@ class Server(DynamicNetworkTrainer):
                     corrects = (torch.argmax(logits, dim=-1) == y).sum()
                     n_samples = y.shape[0]
                     logging.info(f'Accuracy of batch from client {client_idx}: {corrects/n_samples:.2f}({corrects}/{n_samples})')
-
+                    
+                    if self.pipe is not None and len(short_summary) != 0:
+                        logging.debug(f'Sending information of client {client_idx} to flask server...')
+                        for i in range(layer_idx, len(self.model.model_layers)):
+                            short_summary[f'Server-{i}'] = self.model.forward_meters[i].exp_avg + self.model.backward_meters[i].exp_avg
+                        self.pipe.send((client_idx, layer_idx, corrects.item(), n_samples, short_summary, str(list(feat_client.shape))))
                     logging.debug(f'Sending backward information to client {client_idx}: {feat_client.shape}')
                     self.client_connection.send(client_idx, False, f'ServerBackwardToClient{client_idx}', feat_client.grad.detach().cpu(), self.summarize(layer_idx))
                     logging.debug(f'Backward information are successfully sent to client {client_idx}')
