@@ -23,7 +23,7 @@ from sklearn.linear_model import LinearRegression
 from typing import List, Tuple, Any, Callable, Dict, Union
 from functools import reduce
 
-LOG_LEVEL = logging.DEBUG
+LOG_LEVEL = logging.INFO
 BASIC_FORMAT_CLIENT = '%(asctime)s - %(filename)s[line:%(lineno)d] - [Client (CLIENTNO)] %(levelname)s: %(message)s'
 BASIC_FORMAT_SERVER = f'%(asctime)s - %(filename)s[line:%(lineno)d] - [Server] %(levelname)s: %(message)s'
 DATE_FORMAT = '%Y-%m-%d %H:%M:%S'
@@ -193,7 +193,7 @@ class Client(DynamicNetworkTrainer):
     def right_shift_split_point(self):
         logging.info(f'Right-shifting split point from {len(self.model.model_layers)}...')
         
-        self.server_connection.send(0, f'Client{self.number}RequestParameters', len(self.model.model_layers))
+        self.server_connection.send(0, False, f'Client{self.number}RequestParameters', len(self.model.model_layers))
         msgs = self.server_connection.recv(False, source=0)
         assert len(msgs) == 1 and msgs[0][1] == {}
         msg_type, layer, optim_state_diff = msgs[0][0]
@@ -206,7 +206,7 @@ class Client(DynamicNetworkTrainer):
         logging.info('Right-shift finished')
 
     def auto_split(self, client_forwards: np.ndarray, client_backwards: np.ndarray, server_forwards: np.ndarray, server_backwards: np.ndarray, network_sizes: np.ndarray, network_times: np.ndarray, cur_time: float) -> None:
-        if len(client_forwards) > 0: 
+        if len(client_forwards) > 0 and len(self.model.model_layers) < len(self.client_forwards_base): 
             regr = LinearRegression(fit_intercept=(len(client_forwards) > 1))
             regr.fit(self.client_forwards_base[:len(self.model.model_layers)].reshape(-1, 1), client_forwards.reshape(-1, 1))
             client_forwards = np.concatenate([client_forwards, regr.predict(self.client_forwards_base[len(self.model.model_layers):].reshape(-1, 1)).reshape(-1)])
@@ -220,15 +220,15 @@ class Client(DynamicNetworkTrainer):
             client_forwards = self.client_forwards_base
             client_backwards = self.client_backwards_base
         
-        if len(server_forwards) > 0: 
+        if len(server_forwards) > 0 and len(self.model.model_layers) > 0: 
             regr = LinearRegression(fit_intercept=(len(server_forwards) > 1))
             regr.fit(self.server_forwards_base[len(self.model.model_layers):].reshape(-1, 1), server_forwards.reshape(-1, 1))
-            server_forwards = np.concatenate([regr.predict(self.server_forwards_base[:len(self.model.model_layers)].reshape(-1, 1)).reshape(-1), server_forwards[:-1]])
+            server_forwards = np.concatenate([regr.predict(self.server_forwards_base[:len(self.model.model_layers)].reshape(-1, 1)).reshape(-1), server_forwards])
             del regr
 
             regr = LinearRegression(fit_intercept=(len(server_backwards) > 1))
             regr.fit(self.server_backwards_base[len(self.model.model_layers):].reshape(-1, 1), server_backwards.reshape(-1, 1))
-            server_backwards = np.concatenate([regr.predict(self.server_backwards_base[:len(self.model.model_layers)].reshape(-1, 1)).reshape(-1), server_backwards[:-1]])
+            server_backwards = np.concatenate([regr.predict(self.server_backwards_base[:len(self.model.model_layers)].reshape(-1, 1)).reshape(-1), server_backwards])
             del regr
         else:
             server_forwards = self.server_forwards_base
@@ -236,26 +236,31 @@ class Client(DynamicNetworkTrainer):
         
         regr = LinearRegression(fit_intercept=(len(network_sizes) > 1))
         regr.fit(network_sizes.reshape(-1, 1), network_times.reshape(-1, 1))
-        network_times = regr.predict(self.input_sizes[:self.n_layer_total].reshape(-1, 1)).reshape(-1)[:-1]
+        network_times = regr.predict(self.input_sizes.reshape(-1, 1)).reshape(-1)
         
-        # print(client_forwards.shape, client_backwards.shape)
-        # print(np.cumsum(client_forwards + client_backwards).shape)
-        # print(server_forwards.shape, server_backwards.shape)
-        # print(np.sum(server_forwards + server_backwards).shape)
-        # print(np.cumsum(server_forwards + server_backwards).shape)
-        # print(network_times.shape)
-        total_times = np.cumsum(client_forwards + client_backwards) + \
-                      (np.sum(server_forwards + server_backwards) - np.cumsum(server_forwards + server_backwards)) + \
-                      network_times
+        # client_forwards: shape: (self.n_layer_total, ), i-th element represents client forward time of i-th layer
+        # client_backwards: shape: (self.n_layer_total, ), i-th element represents client backward time of i-th layer
+        # server_forwards: shape: (self.n_layer_total+1, ), i-th element represents server forward time of i-th layer
+        # server_backwards: shape: (self.n_layer_total+1, ), i-th element represents server backward time of i-th layer
+        # network_times: shape: (self.n_layer_total+1, ), i-th element represents network time w.r.t. the **input** of i-th layer
+        
+        # total_times[i] = "client forward & backward time from layer 0 to layer i" + \
+        #                  "network time to transport output of layer i (input of layer i+1) to server and receive gradient" + \
+        #                  "server forward & backward time from layer i+1 to end"
+
+        total_times = np.cumsum(client_forwards + client_forwards) + \
+                      (np.sum(server_forwards[1:] + server_backwards[1:]) - np.cumsum(server_forwards[1:] + server_backwards[1:])) + \
+                      network_times[1:]
         
         logging.info(f'Predicted total times w.r.t. split point: {total_times}')
         
-        total_times = total_times[1:]
         min_time_pred, best_split_point = np.min(total_times), np.argmin(total_times)
-        best_split_point += 1
-        # Prevent from leaving no layer on client side.
+        best_split_point += 1   # best_split_point \in {1, 2, ..., self.n_layer_total}, leaving at least 1 layer and at most 1 layer on client and server, respectively.
+        
+        logging.info(f'Current time consumption: {cur_time}, Estimated min time consumption: {min_time_pred}')
         
         if (min_time_pred < SPLIT_POINT_CHANGE_GAMMA * cur_time):
+            logging.info(f'Split point shifting to {best_split_point} / {self.n_layer_total}')
             while(best_split_point > len(self.model.model_layers)):
                 self.right_shift_split_point()
             while(best_split_point < len(self.model.model_layers)):
@@ -467,7 +472,7 @@ class Server(DynamicNetworkTrainer):
 
                     layer, optim_state_diff = self.dump_layer(layer_idx)
                     logging.debug(f'Sending layer to client {client_idx}: {type(layer)}, {type(optim_state_diff)}')
-                    self.client_connections.send(client_idx, False, f'ServerReplyParametersToClient{client_idx}', layer, optim_state_diff)
+                    self.client_connection.send(client_idx, False, f'ServerReplyParametersToClient{client_idx}', layer, optim_state_diff)
 
                 elif re.match(r'Client\d+Sync', msg[0]):
                     model_state, optim_state = msg[1:]
