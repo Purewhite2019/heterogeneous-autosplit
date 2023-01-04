@@ -41,8 +41,7 @@ def get_raw_dataset(dataset: str, n_clients: int):
                                                             T.ToTensor(),
                                                             T.Normalize(mean=(0.286),
                                                                         std=(0.352))]))
-    client_datasets = random_split(whole_train_dataset, [len(whole_train_dataset) // 2,
-                                                            len(whole_train_dataset) - len(whole_train_dataset) // 2])
+    client_datasets = random_split(whole_train_dataset, split_integer(len(whole_train_dataset), n_clients))
     return client_datasets
 
 def get_test_dataset(dataset: str):
