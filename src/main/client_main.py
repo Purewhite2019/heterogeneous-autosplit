@@ -29,7 +29,7 @@ if __name__ == '__main__':
 
     client_to_server_connection = TCPConnection(is_server=False, server_ip='59.78.9.42', server_port=50000)
     print(f'Client {client_idx} succeeded connecting to server')
-    runner = Client(client_idx, dump_path, feat_extractor[:client_layer_num], 'sgd', dict(lr=1e-2, momentum=0.99), dataloader_fn,
+    runner = Client(client_idx, dump_path, feat_extractor, client_layer_num, 'sgd', dict(lr=1e-2, momentum=0.99), dataloader_fn,
            server_connection=client_to_server_connection)
     print(f'Client {client_idx} begins training')
     runner.train(n_epoch=50)
