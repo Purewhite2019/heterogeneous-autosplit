@@ -28,6 +28,9 @@ def get_data() -> str:
 def update() -> None:
     global accuracy_meters, client_infos
     
+    for v in client_infos.values():
+        v['accuracy'] = []
+    
     while flask_pipe.poll():
         client_idx, layer_idx, corrects, n_samples, short_summary, feat_size = flask_pipe.recv()
         logging.debug(f'Received information of client {client_idx}')
@@ -53,4 +56,4 @@ def init_flask(pipe: Connection, setting_: dict={}) -> None:
     flask_pipe = pipe
     setting = json.dumps(setting_)
 
-    app.run(host="127.0.0.1", port=6000)
+    app.run(host="127.0.0.1", port=5000)
