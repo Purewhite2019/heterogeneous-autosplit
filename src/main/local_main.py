@@ -6,7 +6,7 @@ from torch.utils.data import random_split
 import torchvision
 import torchvision.transforms as T
 from torch.utils.data import DataLoader
-
+from src.utils.data_process import get_raw_dataset, get_test_dataset, get_rotated_dataset, get_dataset_with_quantity_skewed_label, get_dataset_with_distribution_skewed_label
 from src.core import Client, Server, MPIConnection
 from src.models.cifar import mobilenet
 from mpi4py import MPI
@@ -20,19 +20,18 @@ rank = comm.Get_rank()
 def is_server(rankp: int):
     return rankp == 0
 
-
+DATASET = 'cifar10'
 
 
 if __name__ == '__main__':
-    feat_extractor, classifier = mobilenet(class_num=10).dump_layers()
-    whole_train_dataset = torchvision.datasets.CIFAR10(root='data/cifar10/', train=True, download=True,
-                                                       transform=T.Compose(
-                                                           [T.RandomVerticalFlip(), T.RandomResizedCrop(32),
-                                                            T.ToTensor(),
-                                                            T.Normalize(mean=(0.4914, 0.4822, 0.4465),
-                                                                        std=(0.247, 0.243, 0.261))]))
-    client_datasets = random_split(whole_train_dataset, [len(whole_train_dataset) // 2,
-                                                         len(whole_train_dataset) - len(whole_train_dataset) // 2])
+    if DATASET == 'cifar10':
+        feat_extractor, classifier = mobilenet(class_num=10).dump_layers()
+    elif DATASET == 'cifar100':
+        feat_extractor, classifier = mobilenet(class_num=100).dump_layers()
+    elif DATASET == 'fashionmnist':
+        feat_extractor, classifier = mobilenet(class_num=10).dump_layers()
+    
+    client_datasets = get_raw_dataset(dataset=DATASET, n_clients=2)
 
     def dataloader_fn(idx: int) -> DataLoader:
         return DataLoader(client_datasets[idx - 1], batch_size=32, shuffle=True, pin_memory=True)
@@ -58,10 +57,7 @@ if __name__ == '__main__':
         print(f'Client {rank} terminate training')
         runner.wait_for_sync()
         print(f'Client {rank} sync completed')
-        test_dataset = torchvision.datasets.CIFAR10(root='data/cifar10/', train=False, download=True,
-                                                    transform=T.Compose([T.ToTensor(),
-                                                                         T.Normalize(mean=(0.4914, 0.4822, 0.4465),
-                                                                                     std=(0.247, 0.243, 0.261))]))
+        test_dataset = get_test_dataset(dataset=DATASET)
         test_dataloader = DataLoader(test_dataset, batch_size=128, shuffle=False, pin_memory=True, drop_last=False)
         runner.test(test_dataloader)
 
