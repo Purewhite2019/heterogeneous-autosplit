@@ -6,7 +6,8 @@ from torch.utils.data import random_split
 import torchvision
 import torchvision.transforms as T
 from torch.utils.data import Dataset, DataLoader
-
+import multiprocessing
+from server_flask import init_flask
 
 
 from src.core import Server, TCPConnection
@@ -19,6 +20,14 @@ if __name__ == '__main__':
 
     server_to_client_connection = TCPConnection(is_server=True, server_ip='59.78.9.42', server_port=50000)
     print('Server2Clients\' connections are all established')
+
+    pipe = multiprocessing.Pipe()
+    proc_flask = multiprocessing.Process(target=init_flask, args=(pipe[0],
+                                                                  dict(n_layers_total=len(feat_extractor) + len(
+                                                                      classifier),
+                                                                       client_num=1)))
+    proc_flask.start()
+
     runner = Server(dump_path, feat_extractor + classifier, 'sgd', dict(lr=1e-3, momentum=0.99),
            server_to_client_connection, 2)
     print('Server begins listening')
