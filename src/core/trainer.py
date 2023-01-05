@@ -3,7 +3,7 @@ from src.utils.utils import AverageMeter, analyze
 import os
 import logging
 from typing import List, Tuple, Any, Dict
-from time import time, time_ns, perf_counter_ns
+from time import time
 
 import numpy as np
 import torch
@@ -44,14 +44,14 @@ class DynamicNetwork(nn.Module):
         for i, layer in enumerate(self.model_layers[idx_start:]):
             if torch.cuda.is_available():
                 torch.cuda.synchronize()
-            begin = perf_counter_ns()
+            begin = time()
             self.last_forward_inputs[i + idx_start] = x
             x = layer(x)
             self.last_forward_outputs[i + idx_start] = x
             x = x.detach().requires_grad_(True)
             if torch.cuda.is_available():
                 torch.cuda.synchronize()
-            end = perf_counter_ns()
+            end = time()
             self.forward_meters[idx_start+i].update(end - begin)
         return x
     
@@ -59,14 +59,14 @@ class DynamicNetwork(nn.Module):
         for i, (last_forward_output, last_forward_input) in reversed(list(enumerate(zip(self.last_forward_outputs[idx_start:], self.last_forward_inputs[idx_start:])))):
             if torch.cuda.is_available():
                 torch.cuda.synchronize()
-            begin = perf_counter_ns()
+            begin = time()
             # print(i, last_forward_output.shape, last_forward_input.shape)
             # print(i, last_forward_output.grad_fn, last_forward_input.grad_fn)
             last_forward_output.backward(grad)
             grad = last_forward_input.grad
             if torch.cuda.is_available():
                 torch.cuda.synchronize()
-            end = perf_counter_ns()
+            end = time()
             self.backward_meters[idx_start+i].update(end - begin)
 
     def push_front_layer(self, layer: nn.Module) -> None:

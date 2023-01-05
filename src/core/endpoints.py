@@ -26,7 +26,7 @@ import multiprocessing.connection
 from typing import List, Tuple, Any, Callable, Dict, Union, Optional
 from functools import reduce
 
-LOG_LEVEL = logging.INFO
+LOG_LEVEL = logging.DEBUG
 BASIC_FORMAT_CLIENT = '%(asctime)s - %(filename)s[line:%(lineno)d] - [Client (CLIENTNO)] %(levelname)s: %(message)s'
 BASIC_FORMAT_SERVER = f'%(asctime)s - %(filename)s[line:%(lineno)d] - [Server] %(levelname)s: %(message)s'
 DATE_FORMAT = '%Y-%m-%d %H:%M:%S'
@@ -121,17 +121,17 @@ class Client(DynamicNetworkTrainer):
             # Client pre-runs from layer 0, server runs classifier
             feat_client = self.forward(X)
             
-            begin = time.perf_counter_ns()
+            begin = time.time()
             logging.debug(f'Sending forward pre-run information to server: {len(self.model.model_layers)}, {feat_client.shape}, {y.shape}')
             self.server_connection.send(0, False, f'Client{self.number}Forward', len(self.model.model_layers), feat_client.cpu(), y.cpu(), {})
 
             msgs = self.server_connection.recv(False, source=0)
             assert len(msgs) == 1 and msgs[0][1] == {}
             msg_type, feat_grad, summary_server = msgs[0][0]
-            assert msg_type == f'ServerBackwardToClient{self.number}' and isinstance(feat_grad, torch.Tensor)
+            assert msg_type == f'ServerBackwardToClient_{self.number}' and isinstance(feat_grad, torch.Tensor)
             feat_grad = feat_grad.to(self.device)
             logging.debug(f'Received backward pre-run information from server: {msg_type}, {feat_grad.shape}')
-            end = time.perf_counter_ns()
+            end = time.time()
             
             network_meter_first.update(end - begin - sum([v[1] for v in summary_server.values()]))
             
@@ -142,15 +142,15 @@ class Client(DynamicNetworkTrainer):
             # Server pre-runs from layer 0
             self.server_connection.send(0, False, f'Client{self.number}Forward', 0, X.cpu(), y.cpu(), {})
 
-            begin = time.perf_counter_ns()
+            begin = time.time()
             logging.debug(f'Sending forward raw-data to server: {len(self.model.model_layers)}, {feat_client.shape}, {y.shape}')
             msgs = self.server_connection.recv(False, source=0)
             assert len(msgs) == 1 and msgs[0][1] == {}
             msg_type, feat_grad, summary_server = msgs[0][0]
-            assert msg_type == f'ServerBackwardToClient{self.number}' and isinstance(feat_grad, torch.Tensor)
+            assert msg_type == f'ServerBackwardToClient_{self.number}' and isinstance(feat_grad, torch.Tensor)
             feat_grad = feat_grad.to(self.device)
             logging.debug(f'Received backward raw-data information from server: {msg_type}, {feat_grad.shape}')
-            end = time.perf_counter_ns()
+            end = time.time()
             
             network_meter_last.update(end - begin - sum([v[1] for v in summary_server.values()]))
             
@@ -309,18 +309,18 @@ class Client(DynamicNetworkTrainer):
 
                 feat_shape_last = feat_client.shape
 
-                begin = time.perf_counter_ns()
+                begin = time.time()
                 logging.debug(f'Sending forward information to server: {len(self.model.model_layers)}, {feat_client.shape}, {y.shape}')
                 self.server_connection.send(0, False, f'Client{self.number}Forward', len(self.model.model_layers), feat_client.cpu(), y.cpu(), self.short_summarize())
 
                 msgs = self.server_connection.recv(False, source=0)
                 assert len(msgs) == 1 and msgs[0][1] == {}
                 msg_type, feat_grad, summary_server = msgs[0][0]
-                assert msg_type == f'ServerBackwardToClient{self.number}' and isinstance(feat_grad, torch.Tensor)
+                assert msg_type == f'ServerBackwardToClient_{self.number}' and isinstance(feat_grad, torch.Tensor)
                 feat_grad = feat_grad.to(self.device)
                 logging.debug(f'Received backward information from server: {msg_type}, {feat_grad.shape}')
 
-                end = time.perf_counter_ns()
+                end = time.time()
                 self.merge_server_summary(summary_server)
                 self.network_meter.update(end - begin - sum(summary_server.values()))   # Server total time - server train/inference time
                 
@@ -343,18 +343,18 @@ class Client(DynamicNetworkTrainer):
                 feat_empty = torch.rand(feat_shape_empty)
                 y = torch.zeros(size=[0], dtype=torch.int64)
 
-                begin = time.perf_counter_ns()
+                begin = time.time()
                 logging.debug(f'Sending forward zero information to server: {len(self.model.model_layers)}, {feat_empty.shape}, {y.shape}')
                 self.server_connection.send(0, False, f'Client{self.number}Forward', len(self.model.model_layers), feat_empty.cpu(), y.cpu(), {})
 
                 msgs = self.server_connection.recv(False, source=0)
                 assert len(msgs) == 1 and msgs[0][1] == {}
                 msg_type, feat_grad, summary_server = msgs[0][0]
-                assert msg_type == f'ServerBackwardToClient{self.number}' and isinstance(feat_grad, torch.Tensor)
+                assert msg_type == f'ServerBackwardToClient_{self.number}' and isinstance(feat_grad, torch.Tensor)
                 feat_grad = feat_grad.to(self.device)
                 logging.debug(f'Received backward zero information from server: {msg_type}, {feat_grad.shape}')
 
-                end = time.perf_counter_ns()
+                end = time.time()
                 self.network_meter_zero.update(end - begin - sum([v[1] for v in summary_server.values()]))   # Server total time - server train/inference time
             
             client_forwards = np.array([real_value[f'client{self.number}-forward-{i}'] for i in range(len(self.model.model_layers))])
@@ -499,7 +499,7 @@ class Server(DynamicNetworkTrainer):
                             short_summary[f'Server-{i}'] = self.model.forward_meters[i].exp_avg + self.model.backward_meters[i].exp_avg
                         self.pipe.send((client_idx, layer_idx, corrects.item(), n_samples, short_summary, str(list(feat_client.shape))))
                     logging.debug(f'Sending backward information to client {client_idx}: {feat_client.shape}')
-                    self.client_connection.send(client_idx, False, f'ServerBackwardToClient{client_idx}', feat_client.grad.detach().cpu(), self.summarize(layer_idx))
+                    self.client_connection.send(client_idx, False, f'ServerBackwardToClient_{client_idx}', feat_client.grad.detach().cpu(), self.summarize(layer_idx))
                     logging.debug(f'Backward information are successfully sent to client {client_idx}')
 
                 elif re.match(r'Client\d+RequestParameters', msg[0]):

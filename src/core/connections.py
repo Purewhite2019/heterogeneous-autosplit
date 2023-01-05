@@ -59,7 +59,7 @@ class MPIConnection(Connection):
             MPI.COMM_WORLD.isend([(msg, kwmsg)], dest=dest)
         else:
             MPI.COMM_WORLD.send([(msg, kwmsg)], dest=dest)
-    
+
     def recv(self, non_blocking=False, **kwargs) -> List[Tuple[Tuple, Dict]]:
         """Retrieve all messages in the message queue. If the message queue is empty,
         it blocks until a message comes.
@@ -146,12 +146,10 @@ class TCPConnection(Connection): #59.78.9.42: 50000
             self.connection.sendall(pickle.dumps((msg, kwmsg)))
 
     def recv(self, non_blocking=False, **kwargs) -> List[Tuple[Tuple, Dict]]:
-        print('Try to connect')
         if self.is_server:
             self.try_accept()
             while len(self.clients.keys()) == 0:
                 self.try_accept()
-        print('Wait for recv')
         ret = []
         self.connection.setblocking(False)
         # Server
@@ -165,14 +163,22 @@ class TCPConnection(Connection): #59.78.9.42: 50000
                         socket.setblocking(True)
                         # Get the remaining parts of data
                         #try:
-                        while len(data_new) >= 1400:
-                            data += data_new
-                            #print(len(data_new), len(data))
-                            data_new = socket.recv(TCPConnection.BUFFER_SIZE)
-                        #except:
-                        data += data_new
-                        #print(sys.getsizeof(data))
-                        (msg, kwmsg) = pickle.loads(data)
+                        while True:
+                            try:
+                                data += data_new
+                                (msg, kwmsg) = pickle.loads(data)
+                                break
+                            except:
+                                data_new = socket.recv(TCPConnection.BUFFER_SIZE)
+                                continue
+                        # while len(data_new) >= 1400:
+                        #     data += data_new
+                        #     data_new = socket.recv(TCPConnection.BUFFER_SIZE)
+                        #     print(len(data_new), len(data))
+                        # #except:
+                        # data += data_new
+                        # print(sys.getsizeof(data))
+                        # (msg, kwmsg) = pickle.loads(data)
                         ret.append((msg, kwmsg))
                         socket.setblocking(False)
                     except BlockingIOError:
@@ -189,15 +195,23 @@ class TCPConnection(Connection): #59.78.9.42: 50000
                     data_new = self.connection.recv(TCPConnection.BUFFER_SIZE)
                     self.connection.setblocking(True)
                     # Get the remaining parts of data
-                    # try:
-                    while len(data_new) >= 1400:
-                        data += data_new
-                        # print(len(data_new), len(data))
-                        data_new = self.connection.recv(TCPConnection.BUFFER_SIZE)
-                    # except:
-                    data += data_new
-                    # print(sys.getsizeof(data))
-                    (msg, kwmsg) = pickle.loads(data)
+                    while True:
+                        try:
+                            data += data_new
+                            (msg, kwmsg) = pickle.loads(data)
+                            break
+                        except:
+                            data_new = self.connection.recv(TCPConnection.BUFFER_SIZE)
+                            continue
+                    # # try:
+                    # while len(data_new) >= 1400:
+                    #     data += data_new
+                    #     #print(len(data_new), len(data))
+                    #     data_new = self.connection.recv(TCPConnection.BUFFER_SIZE)
+                    # # except:
+                    # data += data_new
+                    # # print(sys.getsizeof(data))
+                    # (msg, kwmsg) = pickle.loads(data)
                     ret.append((msg, kwmsg))
                     self.connection.setblocking(False)
                 except BlockingIOError:
