@@ -492,7 +492,7 @@ class Server(DynamicNetworkTrainer):
                     corrects = (torch.argmax(logits, dim=-1) == y).sum()
                     n_samples = y.shape[0]
                     logging.info(f'Accuracy of batch from client {client_idx}: {corrects/n_samples:.2f}({corrects}/{n_samples})')
-                    
+
                     if self.pipe is not None and len(short_summary) != 0:
                         logging.debug(f'Sending information of client {client_idx} to flask server...')
                         for i in range(layer_idx, len(self.model.model_layers)):

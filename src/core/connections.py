@@ -2,6 +2,7 @@ import sys
 from typing import List, Tuple, Any, Callable, Dict, Union
 import socket
 
+import time
 import pickle
 import re
 
@@ -81,7 +82,7 @@ class TCPConnection(Connection): #59.78.9.42: 50000
     """Implementation of Connection using TCP
     """
     N_SERVER_LISTEN = 128
-    BUFFER_SIZE = 1400
+    BUFFER_SIZE = 4096
     
     def __init__(self, is_server:bool=False, server_ip:str=None, server_port:Union[str, int]=None) -> None:
         """Initialize a TCP Connection
@@ -163,6 +164,7 @@ class TCPConnection(Connection): #59.78.9.42: 50000
                         socket.setblocking(True)
                         # Get the remaining parts of data
                         #try:
+                        st_time = time.time()
                         while True:
                             try:
                                 data += data_new
@@ -179,6 +181,8 @@ class TCPConnection(Connection): #59.78.9.42: 50000
                         # data += data_new
                         # print(sys.getsizeof(data))
                         # (msg, kwmsg) = pickle.loads(data)
+                        ed_time = time.time()
+                        print(ed_time - st_time)
                         ret.append((msg, kwmsg))
                         socket.setblocking(False)
                     except BlockingIOError:
